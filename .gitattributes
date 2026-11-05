@@ -1,0 +1,4 @@
+# Keep test-only files out of the release download (git archive).
+tests/ export-ignore
+.github/ export-ignore
+CONTRIBUTING.md export-ignore

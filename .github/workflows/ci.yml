@@ -1,0 +1,61 @@
+name: CI
+
+# Runs on every pull request and on every push to main.
+# All jobs must pass before a pull request can be merged
+# (see docs/releasing.md > Protect main).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck (follows collect.sh into lib/)
+        run: shellcheck -x --severity=warning collect.sh tests/*.sh tests/kind/run.sh
+
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS runs bash 3.2 and BSD tools; Ubuntu runs bash 5, GNU tools and mawk.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tool versions
+        run: bash --version | head -1; jq --version; curl --version | head -1; python3 --version
+      - name: Static check, guard, redaction, offline end-to-end
+        run: bash tests/run-all.sh
+
+  kind:
+    name: Real cluster (kind, 3 Weaviate replicas)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install kind and helm (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          curl -sSfLo kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind" | sha256sum -c -
+          sudo install -m 0755 kind /usr/local/bin/kind && rm kind
+          curl -sSfLo helm.tgz https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz
+          echo "0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b  helm.tgz" | sha256sum -c -
+          tar -xzf helm.tgz linux-amd64/helm && sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm && rm -rf helm.tgz linux-amd64
+          kind version; helm version --short; kubectl version --client
+      - name: Run the real-cluster test
+        run: bash tests/kind/run.sh

@@ -1,0 +1,16 @@
+# Bundles produced by the tool: never commit them (they contain customer data)
+weaviate-support-bundle-*/
+weaviate-support-bundle-*.tar.gz
+*.anonymization-map.txt
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python bytecode from the test fakes
+__pycache__/
+
+# Local agent instructions (the shared rules live in CONTRIBUTING.md)
+CLAUDE.md

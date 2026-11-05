@@ -1,0 +1,10 @@
+{"level":"info","msg":"request with Authorization: Bearer fixturebearer0009abcdef","time":"2026-11-05T10:00:00Z"}
+{"level":"error","msg":"connect failed: https://backupuser:fixturepass0010@s3.example.com/bucket"}
+{"level":"warning","msg":"token=fixturetoken0011 rejected"}
+{"level":"info","msg":"using key fixture-admin-key-0001 for auth"}
+{"level":"info","msg":"jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.fixtureSignature0012abc"}
+-----BEGIN RSA PRIVATE KEY-----
+FAKE-fixturekeymaterial0013
+-----END RSA PRIVATE KEY-----
+{"level":"info","msg":"shard TenantAlpha loaded","tenant":"TenantAlpha","user":"alice@example.com"}
+{"level":"info","msg":"normal line: vectorIndexType=hnsw limit=25 shards=3"}

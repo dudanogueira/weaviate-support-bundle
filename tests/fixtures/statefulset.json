@@ -1,0 +1,39 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "name": "weaviate",
+    "annotations": {
+      "kubectl.kubernetes.io/last-applied-configuration": "{\"spec\":{\"env\":[{\"name\":\"AUTHENTICATION_APIKEY_ALLOWED_KEYS\",\"value\":\"fixture-admin-key-0001,fixture-reader-key-0002\"}]}}",
+      "meta.helm.sh/release-name": "weaviate"
+    },
+    "managedFields": [{"manager": "helm"}]
+  },
+  "spec": {
+    "replicas": 3,
+    "template": {
+      "spec": {
+        "tolerations": [{"key": "dedicated", "operator": "Equal", "value": "weaviate"}],
+        "containers": [{
+          "name": "weaviate",
+          "image": "cr.weaviate.io/semitechnologies/weaviate:1.40.3",
+          "env": [
+            {"name": "AUTHENTICATION_APIKEY_ENABLED", "value": "true"},
+            {"name": "AUTHENTICATION_APIKEY_ALLOWED_KEYS", "value": "fixture-admin-key-0001,fixture-reader-key-0002"},
+            {"name": "AUTHENTICATION_APIKEY_USERS", "value": "admin,reader"},
+            {"name": "OPENAI_APIKEY", "value": "fixture-openai-value-0003"},
+            {"name": "AZURE_STORAGE_CONNECTION_STRING", "value": "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=fixtureAzureKey0004==;EndpointSuffix=core.windows.net"},
+            {"name": "AWS_ACCESS_KEY_ID", "value": "AKIAFIXTUREFIXTURE00"},
+            {"name": "AWS_SECRET_ACCESS_KEY", "value": "fixture-aws-secret-0005"},
+            {"name": "CLUSTER_BASIC_AUTH_PASSWORD", "valueFrom": {"secretKeyRef": {"name": "weaviate-cluster-api-basic-auth", "key": "password"}}},
+            {"name": "GOMEMLIMIT", "value": "6GiB"},
+            {"name": "QUERY_DEFAULTS_LIMIT", "value": "25"},
+            {"name": "BACKUP_S3_BUCKET", "value": "my-backups"},
+            {"name": "RAFT_BOOTSTRAP_EXPECT", "value": "3"},
+            {"name": "DISABLE_TELEMETRY", "value": "false"}
+          ]
+        }]
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+name: Release
+
+# Push a tag like v1.2.0 to publish a release (see docs/releasing.md).
+# The tag must match TOOL_VERSION in lib/common.sh and have a section in CHANGELOG.md.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the tag matches the tool version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(sed -n 's/^TOOL_VERSION="\(.*\)"$/\1/p' lib/common.sh)
+          [ "$tag" = "$version" ] || { echo "Tag v$tag does not match TOOL_VERSION $version in lib/common.sh"; exit 1; }
+      - name: Release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          awk -v v="${GITHUB_REF_NAME#v}" '
+            $0 ~ "^## " v "( |$)" { on = 1; next }
+            on && /^## / { exit }
+            on { print }' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for ${GITHUB_REF_NAME#v}"; exit 1; }
+          cat notes.md
+      - name: Build the download
+        run: |
+          set -euo pipefail
+          name="weaviate-support-bundle-${GITHUB_REF_NAME#v}"
+          git archive --format=tar.gz --prefix="$name/" -o "$name.tar.gz" HEAD
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "weaviate-support-bundle $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            weaviate-support-bundle-*.tar.gz weaviate-support-bundle-*.tar.gz.sha256

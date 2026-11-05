@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""Fake kubectl for the offline end-to-end test.
+
+Answers the read-only calls the tool makes with fixture data: a 3-node
+Weaviate cluster with planted problems (an OOMKilled pod, a crash-looping
+pod, GOMEMLIMIT equal to the memory limit) and planted secrets.
+Any write verb is recorded as a violation and fails the test.
+"""
+import base64, gzip, json, os, sys, time
+
+CALLS = os.environ.get("FAKE_CALLS", "/dev/null")
+HTTP_PORT = os.environ.get("FAKE_WEAVIATE_PORT", "18080")
+NS = "weaviate"
+SECRET_KEY = "e2e-fixture-apikey-9001"
+
+args = [a for a in sys.argv[1:] if not a.startswith("--request-timeout") and not a.startswith("--context")]
+with open(CALLS, "a") as f:
+    f.write(" ".join(args) + "\n")
+
+def out(obj):
+    print(json.dumps(obj))
+    sys.exit(0)
+
+def err(msg, code=1):
+    sys.stderr.write(msg + "\n")
+    sys.exit(code)
+
+def env(name, value):
+    return {"name": name, "value": value}
+
+STS = {
+    "apiVersion": "apps/v1", "kind": "StatefulSet",
+    "metadata": {"name": "weaviate", "namespace": NS, "uid": "x",
+                 "annotations": {"meta.helm.sh/release-name": "weaviate",
+                                 "kubectl.kubernetes.io/last-applied-configuration": json.dumps({"env": SECRET_KEY})},
+                 "managedFields": [{"manager": "helm"}]},
+    "spec": {
+        "replicas": 3,
+        "selector": {"matchLabels": {"app": "weaviate"}},
+        "template": {
+            "metadata": {"labels": {"app": "weaviate", "app.kubernetes.io/name": "weaviate"}},
+            "spec": {
+                "containers": [{
+                    "name": "weaviate", "image": "cr.weaviate.io/semitechnologies/weaviate:1.40.3",
+                    "args": ["--host", "0.0.0.0", "--port", "8080", "--scheme", "http"],
+                    "ports": [{"containerPort": 8080, "protocol": "TCP"}, {"name": "metrics", "containerPort": 2112}],
+                    "resources": {"requests": {"cpu": "500m", "memory": "2Gi"}, "limits": {"cpu": "2", "memory": "3Gi"}},
+                    "env": [
+                        env("PROMETHEUS_MONITORING_ENABLED", "true"),
+                        env("GOMEMLIMIT", "3GiB"),
+                        env("RAFT_JOIN", "weaviate-0,weaviate-1,weaviate-2"),
+                        env("RAFT_BOOTSTRAP_EXPECT", "3"),
+                        env("AUTHENTICATION_APIKEY_ENABLED", "true"),
+                        env("AUTHENTICATION_APIKEY_ALLOWED_KEYS", SECRET_KEY + ",e2e-fixture-readonly-9002"),
+                        env("AUTHENTICATION_APIKEY_USERS", "admin,alice@example.com"),
+                        env("OPENAI_APIKEY", "sk-e2efixtureopenai9003abcdef"),
+                        {"name": "CLUSTER_BASIC_AUTH_PASSWORD", "valueFrom": {"secretKeyRef": {"name": "weaviate-cluster-api-basic-auth", "key": "password"}}},
+                        env("ENABLE_MODULES", "text2vec-transformers,backup-filesystem"),
+                        env("PERSISTENCE_DATA_PATH", "/var/lib/weaviate"),
+                    ],
+                }],
+                "volumes": [{"name": "weaviate-config", "configMap": {"name": "weaviate-config"}}],
+            },
+        },
+        "volumeClaimTemplates": [{"metadata": {"name": "weaviate-data"}}],
+    },
+    "status": {"replicas": 3, "readyReplicas": 2},
+}
+
+def pod(i, ready=True, restarts=0, last=None, waiting=None):
+    st = {"name": "weaviate", "ready": ready, "started": True, "restartCount": restarts,
+          "image": "cr.weaviate.io/semitechnologies/weaviate:1.40.3",
+          "state": {"running": {"startedAt": "2026-11-05T09:00:00Z"}}, "lastState": {}}
+    if last:
+        st["lastState"] = {"terminated": last}
+    if waiting:
+        st["state"] = {"waiting": {"reason": waiting, "message": "back-off restarting failed container"}}
+    return {
+        "metadata": {"name": f"weaviate-{i}", "namespace": NS, "labels": {"app": "weaviate"},
+                     "creationTimestamp": "2026-11-01T00:00:00Z",
+                     "ownerReferences": [{"kind": "StatefulSet", "name": "weaviate"}]},
+        "spec": {"nodeName": f"node-{i}", "serviceAccountName": "default",
+                 "containers": [{"name": "weaviate", "image": "cr.weaviate.io/semitechnologies/weaviate:1.40.3",
+                                 "env": [env("AUTHENTICATION_APIKEY_ALLOWED_KEYS", SECRET_KEY)],
+                                 "resources": STS["spec"]["template"]["spec"]["containers"][0]["resources"]}],
+                 "volumes": [{"name": "weaviate-data", "persistentVolumeClaim": {"claimName": f"weaviate-data-weaviate-{i}"}},
+                             {"name": "weaviate-config", "configMap": {"name": "weaviate-config"}}]},
+        "status": {"phase": "Running", "qosClass": "Burstable", "startTime": "2026-11-01T00:00:00Z",
+                   "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+                   "containerStatuses": [st]},
+    }
+
+PODS = {"items": [
+    pod(0),
+    pod(1, restarts=3, last={"reason": "OOMKilled", "exitCode": 137, "finishedAt": "2026-11-05T08:00:00Z"}),
+    pod(2, ready=False, restarts=7, last={"reason": "Error", "exitCode": 1, "finishedAt": "2026-11-05T09:30:00Z"}, waiting="CrashLoopBackOff"),
+]}
+
+MODULE_POD = {
+    "metadata": {"name": "transformers-inference-abc", "namespace": NS, "labels": {"app": "transformers-inference"}},
+    "spec": {"nodeName": "node-0", "containers": [{"name": "t2v", "image": "cr.weaviate.io/semitechnologies/transformers-inference:sentence-transformers-all-MiniLM-L6-v2"}]},
+    "status": {"phase": "Running", "qosClass": "BestEffort", "conditions": [{"type": "Ready", "status": "True"}],
+               "containerStatuses": [{"name": "t2v", "ready": True, "restartCount": 0, "state": {"running": {}}, "lastState": {}}]},
+}
+
+def node(n):
+    return {"metadata": {"name": n, "labels": {"topology.kubernetes.io/zone": "eu-west-1a", "node.kubernetes.io/instance-type": "m6i.xlarge", "secret-team-label": "x"},
+                         "creationTimestamp": "2026-10-01T00:00:00Z"},
+            "spec": {},
+            "status": {"capacity": {"cpu": "4", "memory": "16Gi"}, "allocatable": {"cpu": "3920m", "memory": "15Gi"},
+                       "conditions": [{"type": "Ready", "status": "True"}, {"type": "MemoryPressure", "status": "True" if n == "node-1" else "False", "message": "memory pressure"}],
+                       "nodeInfo": {"kubeletVersion": "v1.31.2", "containerRuntimeVersion": "containerd://1.7", "osImage": "Linux", "kernelVersion": "6.1", "architecture": "amd64"},
+                       "images": [{"names": ["a"]}]}}
+
+RELEASE = {"name": "weaviate", "namespace": NS, "version": 2,
+           "info": {"status": "deployed", "first_deployed": "2026-10-01T00:00:00Z", "last_deployed": "2026-11-01T00:00:00Z", "description": "Upgrade complete"},
+           "chart": {"metadata": {"name": "weaviate", "version": "17.8.2", "appVersion": "1.40.3"}},
+           "config": {"authentication": {"apikey": {"enabled": True, "allowed_keys": ["e2e-fixture-helmkey-9004"], "users": ["admin"]}},
+                      "modules": {"text2vec-openai": {"enabled": True, "apiKey": "e2e-fixture-helmopenai-9005"}}, "replicas": 3},
+           "manifest": "kind: Secret\ndata:\n  password: c2VjcmV0"}
+REL_DATA = base64.b64encode(base64.b64encode(gzip.compress(json.dumps(RELEASE).encode())).decode().encode()).decode()
+
+a = args
+joined = " ".join(a)
+
+if not a:
+    err("no args")
+verb = a[0]
+WRITE = {"apply", "create", "delete", "patch", "edit", "replace", "scale", "rollout", "exec", "cp", "label", "annotate", "cordon", "drain", "taint", "set", "run", "debug"}
+if verb in WRITE:
+    with open(CALLS + ".violations", "a") as f:
+        f.write(joined + "\n")
+    err("fake kubectl: write verb refused")
+
+if verb == "config" and a[1:] == ["current-context"]:
+    print("e2e-fake-context"); sys.exit(0)
+if verb == "version":
+    out({"clientVersion": {}, "serverVersion": {"gitVersion": "v1.31.2", "platform": "linux/amd64"}})
+
+if verb == "port-forward":
+    ports = [x[1:] for x in a if x.startswith(":")]
+    for p in ports:
+        print(f"Forwarding from 127.0.0.1:{HTTP_PORT} -> {p}", flush=True)
+    time.sleep(600)
+    sys.exit(0)
+
+if verb == "logs":
+    podname = a[a.index("-n") + 2] if "-n" in a else a[1]
+    if "--previous" in a:
+        if podname in ("weaviate-1", "weaviate-2"):
+            print('2026-11-05T07:59:59.000000000Z {"level":"fatal","msg":"runtime: out of memory","key":"' + SECRET_KEY + '"}')
+            sys.exit(0)
+        err('previous terminated container "weaviate" in pod "%s" not found' % podname)
+    if "--tail=1" in a:
+        print("2026-11-05T10:00:00.000000000Z probe"); sys.exit(0)
+    print('2026-11-05T07:30:00.000000000Z {"level":"info","msg":"Created shard tenanted_TenantAlpha in 9ms"}')
+    print('2026-11-05T07:31:00.000000000Z {"level":"info","msg":"restored data from disk","shard":"TenantDelta","user":"bob@example.com"}')
+    for h in range(8, 13):
+        print(f'2026-11-05T{h:02d}:00:00.000000000Z {{"level":"info","msg":"tick {h} Authorization: Bearer abcdefghijkl123456","tenant":"TenantAlpha"}}')
+    sys.exit(0)
+
+if verb != "get":
+    err("unsupported verb " + verb)
+
+if "--raw" in a:
+    path = a[a.index("--raw") + 1]
+    if path.endswith("/healthz"):
+        print("ok"); sys.exit(0)
+    if path.endswith("/stats/summary"):
+        n = path.split("/")[4]
+        i = n.split("-")[1]
+        out({"node": {"nodeName": n}, "pods": [
+            {"podRef": {"name": f"weaviate-{i}", "namespace": NS},
+             "volume": [{"name": "weaviate-data", "pvcRef": {"name": f"weaviate-data-weaviate-{i}", "namespace": NS},
+                         "capacityBytes": 100 * 2**30, "usedBytes": (93 if i == "2" else 40) * 2**30,
+                         "availableBytes": (7 if i == "2" else 60) * 2**30, "inodes": 1000, "inodesUsed": 10}]},
+            {"podRef": {"name": "other-app", "namespace": "other"}, "volume": [{"pvcRef": {"name": "x"}, "capacityBytes": 1, "usedBytes": 1}]}]})
+    if "metrics.k8s.io" in path:
+        out({"items": [{"metadata": {"name": f"weaviate-{i}"}, "timestamp": "2026-11-05T10:00:00Z", "window": "30s",
+                        "containers": [{"name": "weaviate", "usage": {"cpu": "250m", "memory": "2800Mi"}}]} for i in range(3)]})
+    err("raw path not faked: " + path)
+
+kind = a[1]
+name = a[2] if len(a) > 2 and not a[2].startswith("-") else None
+o = a[a.index("-o") + 1] if "-o" in a else ""
+
+if kind == "statefulsets":
+    if o.startswith("jsonpath"):
+        print("weaviate\tweaviate\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \nother\tpostgres\tpostgres:16 "); sys.exit(0)
+if kind == "statefulset" and name == "weaviate":
+    out(STS)
+if kind == "pods":
+    if o.startswith("jsonpath"):
+        print("weaviate-0\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \nweaviate-1\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \n"
+              "weaviate-2\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \ntransformers-inference-abc\tcr.weaviate.io/semitechnologies/transformers-inference:x \n"
+              "customer-app\tnginx:1.27 "); sys.exit(0)
+    out(PODS)
+if kind == "pod" and name == "transformers-inference-abc":
+    out(MODULE_POD)
+if kind == "node" and name:
+    if o == "name":
+        print("node/" + name); sys.exit(0)
+    out(node(name))
+if kind in ("events", "persistentvolumeclaims", "services", "storageclasses", "secrets") and o == "name":
+    if kind == "secrets" and "-l" in a:
+        print("secret/sh.helm.release.v1.weaviate.v2"); sys.exit(0)
+    print(f"{kind}/x"); sys.exit(0)
+if kind == "events":
+    if "--all-namespaces" in a:
+        err('Error from server (Forbidden): events is forbidden: User "e2e" cannot list resource "events" in API group "" at the cluster scope')
+    out({"items": [
+        {"type": "Warning", "reason": "OOMKilling", "message": "Memory cgroup out of memory", "involvedObject": {"kind": "Pod", "name": "weaviate-1"}, "count": 3, "lastTimestamp": "2026-11-05T08:00:00Z"},
+        {"type": "Warning", "reason": "BackOff", "message": "Back-off restarting failed container", "involvedObject": {"kind": "Pod", "name": "weaviate-2"}, "count": 40, "lastTimestamp": "2026-11-05T09:59:00Z"},
+        {"type": "Normal", "reason": "Pulled", "message": "pulled", "involvedObject": {"kind": "Pod", "name": "customer-app"}, "count": 1, "lastTimestamp": "2026-11-05T09:00:00Z"}]})
+if kind == "pvc" and name:
+    out({"metadata": {"name": name}, "spec": {"storageClassName": "gp3", "resources": {"requests": {"storage": "100Gi"}}, "accessModes": ["ReadWriteOnce"], "volumeName": "pv-" + name},
+         "status": {"phase": "Bound", "capacity": {"storage": "100Gi"}}})
+if kind == "pv" and name:
+    out({"metadata": {"name": name}, "spec": {"capacity": {"storage": "100Gi"}, "persistentVolumeReclaimPolicy": "Delete", "storageClassName": "gp3", "csi": {"driver": "ebs.csi.aws.com"}}, "status": {"phase": "Bound"}})
+if kind == "storageclass" and name:
+    out({"metadata": {"name": name}, "provisioner": "ebs.csi.aws.com", "reclaimPolicy": "Delete", "volumeBindingMode": "WaitForFirstConsumer", "allowVolumeExpansion": True, "parameters": {"type": "gp3"}})
+if kind == "services":
+    out({"items": [{"metadata": {"name": "weaviate"}, "spec": {"type": "LoadBalancer", "selector": {"app": "weaviate"}, "ports": [{"port": 80, "targetPort": 8080}], "clusterIP": "10.0.0.1"}},
+                   {"metadata": {"name": "weaviate-headless"}, "spec": {"type": "ClusterIP", "clusterIP": "None", "selector": {"app": "weaviate"}, "publishNotReadyAddresses": True}},
+                   {"metadata": {"name": "customer-app"}, "spec": {"selector": {"app": "customer"}}}]})
+if kind == "endpointslices":
+    out({"items": [{"endpoints": [{"conditions": {"ready": True}}, {"conditions": {"ready": True}}, {"conditions": {"ready": False}}], "ports": [{"port": 8080}]}]})
+if kind == "networkpolicies":
+    err('Error from server (Forbidden): networkpolicies.networking.k8s.io is forbidden: User "e2e" cannot list resource')
+if kind in ("poddisruptionbudgets", "resourcequotas", "limitranges"):
+    out({"items": []})
+if kind == "configmap" and name == "weaviate-config":
+    out({"metadata": {"name": "weaviate-config"}, "data": {"conf.yaml": "authentication:\n  apikey:\n    enabled: true\n    allowed_keys:\n      - e2e-fixture-cmkey-9006\n    users:\n      - admin\nquery_defaults:\n  limit: 100\n"}})
+if kind == "secrets" and "-l" in a:
+    out({"items": [{"metadata": {"name": "sh.helm.release.v1.weaviate.v1", "labels": {"version": "1", "status": "superseded"}, "creationTimestamp": "2026-10-01T00:00:00Z"}, "data": {"release": REL_DATA}},
+                   {"metadata": {"name": "sh.helm.release.v1.weaviate.v2", "labels": {"version": "2", "status": "deployed"}, "creationTimestamp": "2026-11-01T00:00:00Z"}, "data": {"release": REL_DATA}}]})
+
+err("fake kubectl: not faked: " + joined)

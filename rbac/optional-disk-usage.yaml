@@ -1,0 +1,44 @@
+# OPTIONAL: lets the tool show disk usage of Weaviate's volumes.
+#
+# Why: Weaviate's API does not report disk usage, and the tool never runs
+# commands inside pods. The kubelet's stats summary
+# (GET /api/v1/nodes/<node>/proxy/stats/summary) is the only read-only source,
+# and it needs "get" on nodes/proxy.
+#
+# Risk: nodes/proxy gives access to the kubelet API of a node, which can also
+# run commands in pods on that node. The tool only reads stats/summary and
+# healthz; its safety gate refuses every other path. To keep the risk small:
+#   - the rule below is limited to the nodes that run Weaviate,
+#   - bind it to a dedicated identity (for example a ServiceAccount),
+#   - remove it after the run: kubectl delete -f rbac/optional-disk-usage.yaml
+#
+# Without it, the tool skips disk usage and says so in the bundle.
+# The bundle keeps only: volume name, size, used, free, % used.
+#
+# Find the nodes Weaviate runs on:
+#   kubectl get pods -n <NAMESPACE> -l app=weaviate -o wide
+# Replace <NODE-...>, <SUBJECT> and <NAMESPACE>, then:
+#   kubectl apply -f rbac/optional-disk-usage.yaml
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weaviate-support-bundle-disk-usage
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+    resourceNames: ["<NODE-1>", "<NODE-2>", "<NODE-3>"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: weaviate-support-bundle-disk-usage
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: weaviate-support-bundle-disk-usage
+subjects:
+  - kind: ServiceAccount
+    name: <SUBJECT>
+    namespace: <NAMESPACE>

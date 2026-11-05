@@ -1,0 +1,23 @@
+authentication:
+  anonymous_access:
+    enabled: false
+  apikey:
+    enabled: true
+    allowed_keys:
+      - fixture-yaml-key-0006
+      - "fixture-yaml-key-0007"
+    users:
+      - reader
+      - admin
+  oidc:
+    enabled: false
+    client_secret: "fixture-oidc-secret-0008"
+query_defaults:
+  limit: 25
+debug: false
+tls:
+  privateKey: |
+    -----BEGIN PRIVATE KEY-----
+    FAKE-KEY-MATERIAL-FOR-TESTS-ONLY
+    -----END PRIVATE KEY-----
+  certFile: /etc/tls/cert.pem

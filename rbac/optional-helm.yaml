@@ -1,0 +1,39 @@
+# OPTIONAL: only needed with --include-helm.
+#
+# Why: Helm stores each release revision in a Secret named
+# sh.helm.release.v1.<release>.v<N>. Reading the chart version, release
+# history and your values means reading those Secrets.
+#
+# Risk: Kubernetes cannot limit this to Helm's Secrets by name (the names
+# change on every upgrade), so this allows listing all Secrets in the
+# namespace. The tool only reads Helm's release Secrets (label owner=helm),
+# redacts the values, and never writes the rendered manifest or any other
+# Secret. Remove it after the run if you only need it once:
+#   kubectl delete -f rbac/optional-helm.yaml
+#
+# Replace <NAMESPACE> and <SUBJECT>, then:
+#   kubectl apply -f rbac/optional-helm.yaml
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: weaviate-support-bundle-helm
+  namespace: <NAMESPACE>
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: weaviate-support-bundle-helm
+  namespace: <NAMESPACE>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: weaviate-support-bundle-helm
+subjects:
+  - kind: User                     # or Group / ServiceAccount
+    name: <SUBJECT>
+    apiGroup: rbac.authorization.k8s.io

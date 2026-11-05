@@ -1,0 +1,94 @@
+# Read-only permissions for weaviate-support-bundle.
+#
+# OPTIONAL. You only need this if your own kubectl user cannot already read
+# these resources. Nothing here allows changing anything.
+#
+# 1. Replace every <NAMESPACE> with the namespace Weaviate runs in.
+# 2. Replace <SUBJECT> at the bottom (a user, group or service account).
+# 3. Apply it:  kubectl apply -f rbac/read-only.yaml
+#    (applying RBAC is your action, done once; the tool itself never applies anything)
+#
+# With this Role the tool cannot search other namespaces, so run it with
+# --namespace <NAMESPACE>.
+#
+# Without a rule, the tool skips that part and says so in the bundle.
+# Every rule is explained in docs/permissions.md.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: weaviate-support-bundle-reader
+  namespace: <NAMESPACE>
+rules:
+  # StatefulSet, pods, logs: the core of the bundle.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "persistentvolumeclaims", "events", "resourcequotas", "limitranges"]
+    verbs: ["get", "list"]
+  # Port-forward opens a temporary tunnel from your machine to a Weaviate pod
+  # so the tool can call Weaviate's read-only API. Kubernetes lists this as
+  # "create" on pods/portforward, but it creates and changes nothing (low risk).
+  # Not needed if you use --weaviate-url (then per-pod metrics are skipped).
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+  # Only the config maps Weaviate mounts (names used by the official Helm chart).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["weaviate-config", "weaviate-runtime-overrides", "weaviate-mcp-config"]
+    verbs: ["get"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["list"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["list"]
+  # Current CPU/memory, only if metrics-server is installed.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+# Cluster-scoped objects: the nodes Weaviate runs on, its volumes and storage class.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weaviate-support-bundle-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumes"]
+    verbs: ["get"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: weaviate-support-bundle-reader
+  namespace: <NAMESPACE>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: weaviate-support-bundle-reader
+subjects:
+  - kind: User                     # or Group / ServiceAccount
+    name: <SUBJECT>
+    apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: weaviate-support-bundle-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: weaviate-support-bundle-reader
+subjects:
+  - kind: User                     # or Group / ServiceAccount
+    name: <SUBJECT>
+    apiGroup: rbac.authorization.k8s.io
