@@ -6,7 +6,7 @@
 # no associative arrays, no ${var,,}, no mapfile, no `set -u` with empty arrays.
 
 TOOL_NAME="weaviate-support-bundle"
-TOOL_VERSION="1.0.0"
+TOOL_VERSION="1.1.0"
 BUNDLE_SCHEMA_VERSION="1"
 
 # ---------------------------------------------------------------------------

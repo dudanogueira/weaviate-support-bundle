@@ -2,19 +2,19 @@
 
 Guide for anyone changing this repository, people and AI coding agents
 alike. Read it before editing. Treat this repository as public: never add
-customer names, internal URLs, ticket links, or anything from a real bundle
+real user or company names, internal URLs, ticket links, or anything from a real bundle
 (fixtures must be synthetic).
 
 ## What this is
 
-`collect.sh` is run by Weaviate customers on their own machine, against their
+`collect.sh` is run by Weaviate users on their own machine, against their
 own Kubernetes cluster, usually without any AI help. It produces a bundle
 (folder + `.tar.gz`) that Weaviate support reads. Support engineers and tools read
 bundles, so the output format must stay stable (see `docs/bundle-format.md`).
 
 ## Rules that are never broken
 
-1. **Read-only.** The tool must never change anything in the customer's
+1. **Read-only.** The tool must never change anything in the user's
    cluster or in Weaviate.
    - Only `lib/guard.sh` runs `kubectl` or `curl`. Everything else calls
      `kc`, `kc_raw_get`, `tunnel_open` or `http_get`.
@@ -25,7 +25,7 @@ bundles, so the output format must stay stable (see `docs/bundle-format.md`).
    - No `kubectl exec`, even for "read-only" commands like `df`.
    - `tests/check-read-only.sh` enforces this. Never weaken that test to make
      a change pass.
-2. **No customer data.** Never collect objects, vectors, or query results.
+2. **No database content.** Never collect objects, vectors, or query results.
    Metadata only: configuration, status, counts, logs, metrics.
 3. **Redact before the bundle leaves the temp folder.** Everything is staged
    in a private temp folder (`$WORK`, mode 700) and goes through
@@ -50,8 +50,13 @@ bundles, so the output format must stay stable (see `docs/bundle-format.md`).
    `schema_version` bump in `lib/common.sh` and a note in `CHANGELOG.md` and
    `docs/bundle-format.md`.
 7. **Plain language.** README, terminal output and SUMMARY.md are read by
-   customers under pressure, often not native English speakers. Short
+   users under pressure, often not native English speakers. Short
    sentences, no jargon where a plain word works.
+8. **The agent skill is read-only too.** `SKILL.md` lets agents run only
+   `collect.sh` (preflight first, `--yes` only after the user agrees) and
+   `read-bundle.sh`. `read-bundle.sh` never unpacks to disk, never contacts a
+   cluster, reads only files listed in the manifest, and refuses symlinks and
+   `..`. Keep the skill's rules and these checks in `tests/test-skill.sh`.
 
 ## Layout
 
@@ -72,8 +77,13 @@ lib/jq/redact.jq      redaction rules (names and content patterns)
 lib/jq/findings.jq    red-flag rules → findings.json
 lib/jq/summary.jq     SUMMARY.md renderer
 lib/jq/metrics.jq     metrics parsing and summary
-rbac/                 optional read-only RBAC for customers
-USAGE.md              the customer guide (README stays short and links to it)
+rbac/                 optional read-only RBAC for users
+USAGE.md              the user guide (README stays short and links to it)
+AGENTS.md             entry point for AI agents: the skill to collect/read bundles, this file to change code
+.agents/skills/weaviate-support-bundle/
+                      the agent skill (Agent Skills format): SKILL.md, scripts/read-bundle.sh,
+                      references/findings.md (every red-flag code), references/weaviate-facts.md
+.claude/skills/       symlink to the skill, so Claude Code finds it
 TODO.md               planned work (next: optional pod profiling)
 docs/                 bundle format (the contract), permissions, releasing
 tests/                static check, guard, redaction, offline end-to-end (fake kubectl + fake Weaviate)
@@ -90,7 +100,8 @@ section's `collect_*` function. Add the file to `docs/bundle-format.md`, and
 to the e2e fake (`tests/fake/`) plus an assertion in `tests/test-e2e-offline.sh`.
 
 **Add a red flag.** Add a rule to `lib/jq/findings.jq` with a new stable
-`code`, add it to the table in `docs/bundle-format.md`, and plant the
+`code`, add it to the table in `docs/bundle-format.md` and to the skill's
+`references/findings.md` (what it means, what to check next), and plant the
 condition in the e2e fake so the test proves it fires. Only flag what the data
 shows; put the reasoning in `detail` and point `file` at the evidence.
 
@@ -113,6 +124,8 @@ bash tests/kind/run.sh       # real cluster, about 5 minutes (docker, kind, helm
 - `tests/check-read-only.sh`: static: no direct kubectl/curl, only read verbs, GET only.
 - `tests/test-guard.sh`: the gate blocks write verbs, raw paths, debug port, non-HTTP URLs.
 - `tests/test-redaction.sh`: planted secrets never survive; safe values do.
+- `tests/test-skill.sh`: SKILL.md format, every finding code documented, and
+  `read-bundle.sh` refusing symlinks, `..`, absolute paths and hostile archives.
 - `tests/test-e2e-offline.sh`: full run against `tests/fake/kubectl` and
   `tests/fake/weaviate_server.py` with planted problems and secrets. Set
   `KEEP=/some/dir` to keep the produced bundle.

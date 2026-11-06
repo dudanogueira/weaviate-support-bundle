@@ -3,6 +3,24 @@
 All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org); see `docs/releasing.md`.
 
+## 1.1.0 (2026-11-06)
+
+- Agent skill (`.agents/skills/weaviate-support-bundle`, open Agent Skills
+  format) for Claude Code, GitHub Copilot, Codex and other agents: collects a
+  bundle (preflight first, then only after the user agrees) and explains it.
+  Strict rules: only `collect.sh` and the reader script run, API keys are never
+  handled, the bundle is never sent anywhere.
+- `read-bundle.sh` in the skill: overview, files, log search and jq queries on
+  a bundle or its archive. Read-only: it never unpacks to disk and reads only
+  files listed in the manifest.
+- `AGENTS.md` points agents to the skill.
+- New option `--preflight-only`: show the preflight table, then stop without
+  collecting anything.
+- Documentation says "user" throughout.
+- Release titles are the version only (for example `v1.1.0`).
+
+No change to the bundle format (schema version 1).
+
 ## 1.0.0 (2026-11-05)
 
 First release.

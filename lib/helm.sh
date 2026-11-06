@@ -6,7 +6,7 @@
 # Secrets in the namespace, so this is off by default.
 #
 # Kept: chart name and version, app version, release status, revision history
-# and the values the customer set, redacted. Not kept: the rendered manifest
+# and the values the user set, redacted. Not kept: the rendered manifest
 # and the chart's default values.
 
 collect_helm() {

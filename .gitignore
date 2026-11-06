@@ -1,4 +1,4 @@
-# Bundles produced by the tool: never commit them (they contain customer data)
+# Bundles produced by the tool: never commit them (they contain data from the user's cluster)
 weaviate-support-bundle-*/
 weaviate-support-bundle-*.tar.gz
 *.anonymization-map.txt
@@ -14,3 +14,6 @@ __pycache__/
 
 # Local agent instructions (the shared rules live in CONTRIBUTING.md)
 CLAUDE.md
+
+# Local Claude Code settings
+.claude/settings.local.json

@@ -20,7 +20,7 @@ What the step must respect:
   screen instead of failing.
 - **A CPU profile adds load while it runs.** Keep it short, show the duration
   on the approval screen, and profile one pod at a time.
-- **Check what profiles contain** (for example pprof labels) for customer
+- **Check what profiles contain** (for example pprof labels) for tenant or user
   names before release, and redact or anonymize them like other files.
 - **Bundle format:** new files under `pods/<pod>/profiles/`, documented in
   `docs/bundle-format.md`. New files mean a minor version, no schema bump.

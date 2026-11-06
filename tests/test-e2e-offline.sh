@@ -60,7 +60,7 @@ leaks=$(grep -rhoE 'e2e-fixture-[a-z]+-[0-9]{4}|sk-e2efixture[a-z0-9]+|abcdefghi
 [ -z "$leaks" ] && pass "no planted secret in the bundle" || bad "secrets leaked: $leaks"
 tar -xzOf "${B%/}.tar.gz" | grep -qE 'e2e-fixture-[a-z]+-[0-9]{4}' && bad "secret in archive" || pass "no planted secret in the archive"
 
-grep -q 'customer-app\|other-app\|postgres' -r "$B" && bad "data from non-Weaviate workloads in bundle" || pass "only Weaviate workloads collected"
+grep -q 'shop-app\|other-app\|postgres' -r "$B" && bad "data from non-Weaviate workloads in bundle" || pass "only Weaviate workloads collected"
 [ ! -s "$T/kubectl-calls.violations" ] && pass "no kubectl write attempted" || bad "kubectl write attempted: $(cat "$T/kubectl-calls.violations")"
 [ ! -s "$T/http-violations" ] && pass "only HTTP GET used" || bad "non-GET HTTP: $(cat "$T/http-violations")"
 [ -z "$(ls -A "$T/tmp" 2>/dev/null)" ] && pass "temporary folder removed" || bad "temp files left: $(ls "$T/tmp")"
@@ -99,6 +99,24 @@ if [ -n "$B3" ]; then
 else
   bad "outage run produced no bundle"; tail -20 "$T/stderr3"
 fi
+
+# The skill's reader on the real bundle, as archive and as folder
+READ=.agents/skills/weaviate-support-bundle/scripts/read-bundle.sh
+for src in "${B%/}.tar.gz" "${B%/}"; do
+  "$READ" "$src" | grep -q 'POD_OOMKILLED' && pass "read-bundle.sh overview of $(basename "$src")" \
+    || bad "read-bundle.sh overview of $(basename "$src")"
+done
+
+# Preflight only: shows the table, then stops without collecting
+./collect.sh --preflight-only --output "$T/out4" > /dev/null 2> "$T/stderr4"
+rc=$?
+[ "$rc" -eq 0 ] && grep -q 'Preflight only: nothing was collected' "$T/stderr4" && grep -q 'preflight' "$T/stderr4" \
+  && pass "--preflight-only shows the preflight and stops" || { bad "--preflight-only (exit $rc)"; tail -10 "$T/stderr4"; }
+[ -z "$(ls -A "$T/out4" 2>/dev/null)" ] && pass "--preflight-only writes no bundle" || bad "--preflight-only wrote: $(ls "$T/out4")"
+grep -q "Terminated" "$T/stderr4" && bad "--preflight-only prints a job message: $(grep Terminated "$T/stderr4")" || pass "--preflight-only output is clean"
+[ -z "$(ls -A "$T/tmp" 2>/dev/null)" ] && pass "--preflight-only leaves no temporary files" || bad "temp files left: $(ls "$T/tmp")"
+sleep 0.5
+pgrep -f "$T/bin/kubectl port-forward" > /dev/null && bad "--preflight-only left a port-forward" || pass "--preflight-only closes its port-forward"
 
 [ "$fail" = 0 ] && echo "E2E PASSED" || { echo "E2E FAILED (rerun with KEEP=/some/dir to keep the bundle)"; }
 [ -n "${KEEP:-}" ] && cp -R "$B" "$KEEP" && echo "bundle copied to $KEEP"

@@ -4,6 +4,10 @@ Reference for every file the tool writes into a bundle. Weaviate support,
 and any script that reads bundles, relies on these names and fields, so they
 only change in a controlled way (see Versioning).
 
+To read a bundle from the command line, without unpacking it, use
+[`read-bundle.sh`](../.agents/skills/weaviate-support-bundle/scripts/read-bundle.sh)
+(`--help` lists its options).
+
 **Versioning.** `manifest.json` has `schema_version`. Adding files or fields
 does not change it. Renaming, removing or changing the meaning of a file,
 field or finding code bumps it, and the change is noted in `CHANGELOG.md`.

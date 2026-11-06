@@ -140,13 +140,13 @@ api POST /v1/schema -d '{"class":"Product","vectorizer":"none","vectorIndexType"
   "properties":[{"name":"title","dataType":["text"]}]}' > /dev/null || exit 1
 api POST /v1/schema -d '{"class":"Tenanted","vectorizer":"none","multiTenancyConfig":{"enabled":true,"autoTenantActivation":true},
   "replicationConfig":{"factor":2},"properties":[{"name":"title","dataType":["text"]}]}' > /dev/null || exit 1
-tenants=$(seq 1 12 | awk '{ printf "%s{\"name\":\"CustomerAcme%02d\"}", (NR > 1 ? "," : ""), $1 }')
+tenants=$(seq 1 12 | awk '{ printf "%s{\"name\":\"AcmeCorp%02d\"}", (NR > 1 ? "," : ""), $1 }')
 api POST /v1/schema/Tenanted/tenants -d "[$tenants]" > /dev/null || exit 1
-api PUT /v1/schema/Tenanted/tenants -d '[{"name":"CustomerAcme11","activityStatus":"INACTIVE"},{"name":"CustomerAcme12","activityStatus":"INACTIVE"}]' > /dev/null || exit 1
+api PUT /v1/schema/Tenanted/tenants -d '[{"name":"AcmeCorp11","activityStatus":"INACTIVE"},{"name":"AcmeCorp12","activityStatus":"INACTIVE"}]' > /dev/null || exit 1
 
 vectors Article 600 | api POST /v1/batch/objects -d @- > /dev/null || exit 1
 vectors Product 200 | api POST /v1/batch/objects -d @- > /dev/null || exit 1
-for t in 01 02 03; do vectors Tenanted 20 "CustomerAcme$t" | api POST /v1/batch/objects -d @- > /dev/null || exit 1; done
+for t in 01 02 03; do vectors Tenanted 20 "AcmeCorp$t" | api POST /v1/batch/objects -d @- > /dev/null || exit 1; done
 
 READER_KEY=$(api POST /v1/users/db/support-reader -d "{}" | jq -r '.apikey')
 [ -n "$READER_KEY" ] && [ "$READER_KEY" != "null" ] || { echo "could not create the reader user"; exit 1; }
@@ -200,9 +200,9 @@ rc=$?
 B3=$(ls -d "$OUT"/2-options/weaviate-support-bundle-*/ 2>/dev/null | head -n 1)
 [ "$rc" -eq 0 ] && [ -n "$B3" ] && pass "run 2 finished" || { bad "run 2 failed (exit $rc)"; tail -40 "$WORKDIR/run2.out"; }
 if [ -n "$B3" ]; then
-  if grep -rqE 'CustomerAcme[0-9]+|support-reader' "$B3"; then
+  if grep -rqE 'AcmeCorp[0-9]+|support-reader' "$B3"; then
     bad "--anonymize left tenant or user names:"
-    grep -rhoE '.{0,60}(CustomerAcme[0-9]+|support-reader).{0,40}' "$B3" | head -5 | sed 's/^/    /'
+    grep -rhoE '.{0,60}(AcmeCorp[0-9]+|support-reader).{0,40}' "$B3" | head -5 | sed 's/^/    /'
   else
     pass "--anonymize removed tenant and user names"
   fi

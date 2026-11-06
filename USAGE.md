@@ -10,6 +10,7 @@ A step-by-step guide. It takes about 5 minutes, most of it reading.
 [Step 4: run it](#step-4-run-it) ·
 [Step 5: review](#step-5-review-the-result) ·
 [Step 6: send](#step-6-send-it-to-weaviate-support) ·
+[Use it with an AI agent](#use-it-with-an-ai-agent) ·
 [Options](#options) ·
 [High-security environments](#high-security-environments) ·
 [Troubleshooting](#troubleshooting)
@@ -142,6 +143,42 @@ support is done, delete the folder and the `.tar.gz`.
 
 ---
 
+## Use it with an AI agent
+
+Optional. If you use an AI coding agent, it can run the steps above for you
+and explain the result. The tool ships with an agent skill
+([`.agents/skills/weaviate-support-bundle`](.agents/skills/weaviate-support-bundle/SKILL.md))
+in the open Agent Skills format, which Claude Code, GitHub Copilot, Codex
+and other agents can read.
+
+1. Set the API key in your terminal first (step 3), then start your agent
+   **from that terminal**, inside the tool folder. Never paste the key into
+   the chat.
+2. Ask, for example: *"Collect a Weaviate support bundle for namespace
+   weaviate, logs from the last 6 hours."*
+3. The agent runs `./collect.sh --preflight-only`, shows you the preflight
+   table and waits. Nothing is collected until you say yes.
+4. It then collects the bundle and explains `SUMMARY.md`: health, red flags,
+   what was not collected, and what to check next.
+5. You still review the bundle and send it to support yourself (steps 5
+   and 6). The agent never sends it anywhere.
+
+**Agents that do not find the skill on their own:** most read
+[`AGENTS.md`](AGENTS.md), which points them to it. To use the skill outside
+this folder, copy `.agents/skills/weaviate-support-bundle` to your agent's
+personal skills folder (for example `~/.claude/skills/` or `~/.copilot/skills/`).
+
+**Privacy.** Whatever the agent reads, for example the preflight output and
+parts of the bundle, is sent to your agent's AI provider. The bundle is
+already redacted. Use `--anonymize` if tenant or user names must not leave your
+machine, and follow your company's rules for AI tools.
+
+The skill has strict rules: it only runs `collect.sh` and its own read-only
+reader script, never runs other commands against your cluster, never handles
+your API key, and never opens the anonymization map.
+
+---
+
 ## Options
 
 | Option | What it does | Default |
@@ -163,6 +200,7 @@ support is done, delete the folder and the `.tar.gz`.
 | `--anonymize` | Replace tenant names and user names with placeholders | off |
 | `--metrics-interval N` | Seconds between the two metrics snapshots | `30` |
 | `-o`, `--output DIR` | Where to write the bundle | current folder |
+| `--preflight-only` | Show the preflight table, then stop. Nothing is collected. | off |
 | `-y`, `--yes` | Do not ask for confirmation (for scripts and CI) | ask |
 | `-h`, `--help` | Show help | |
 | `--version` | Show the tool version | |
@@ -192,7 +230,7 @@ crash reason is.
 ## High-security environments
 
 - **Anonymize names.** `--anonymize` replaces tenant names (often your own
-  customers' IDs) and user names with placeholders such as `tenant-000001` and
+  end users' IDs) and user names with placeholders such as `tenant-000001` and
   `user-001`. The mapping is written **next to** the archive
   (`...anonymization-map.txt`), never inside it. Keep it to translate the
   placeholders when support refers to them. Do not send it.

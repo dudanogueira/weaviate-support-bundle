@@ -9,4 +9,4 @@
 - [ ] `bash tests/run-all.sh` passes locally
 - [ ] Bundle format changes are documented in `docs/bundle-format.md` (and `schema_version` bumped if breaking)
 - [ ] `CHANGELOG.md` updated under "Unreleased"
-- [ ] Customer-facing text (USAGE.md, terminal output, SUMMARY.md) is plain and short
+- [ ] User-facing text (USAGE.md, terminal output, SUMMARY.md) is plain and short

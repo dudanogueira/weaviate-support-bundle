@@ -19,7 +19,7 @@ code_only() {
       -e 's/"[^"]*"/""/g' -e "s/'[^']*'/''/g" "$1"
 }
 
-files=$(ls collect.sh lib/*.sh)
+files=$(ls collect.sh lib/*.sh .agents/skills/*/scripts/*.sh)
 
 # 1. kubectl / curl outside guard.sh
 for f in $files; do

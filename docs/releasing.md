@@ -1,6 +1,6 @@
 # Releasing
 
-For maintainers. Customers do not need this page.
+For maintainers. Users do not need this page.
 
 ## Versions
 
@@ -61,7 +61,7 @@ git tag -d v1.1.0 && git push origin :refs/tags/v1.1.0
 |---|---|
 | Lint (shellcheck) | Shell mistakes |
 | Tests (ubuntu-latest) | Read-only static check, guard, redaction, offline end-to-end, with bash 5 and GNU tools |
-| Tests (macos-latest) | The same with bash 3.2 and BSD tools (what most customers on a Mac have) |
+| Tests (macos-latest) | The same with bash 3.2 and BSD tools (what most users on a Mac have) |
 | Real cluster (kind, 3 Weaviate replicas) | `tests/kind/run.sh`: a real Kubernetes cluster with the official Helm chart, sample data, a viewer API key, two broken pods |
 
 Run the same locally:

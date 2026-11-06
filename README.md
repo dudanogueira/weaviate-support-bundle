@@ -13,6 +13,11 @@ cd weaviate-support-bundle
 
 **👉 Step-by-step guide: [USAGE.md](USAGE.md)**
 
+**Prefer to use an AI agent?** Open this folder in Claude Code, GitHub
+Copilot, Codex or a similar agent and ask it to collect a support bundle. It
+follows the same steps, asks before collecting, and explains the result. See
+[USAGE.md](USAGE.md#use-it-with-an-ai-agent).
+
 ## What it does, and what it never does
 
 **It does:**
@@ -52,6 +57,7 @@ chart or your own manifests.
 | [USAGE.md](USAGE.md) | How to run it, options, examples, high-security tips, troubleshooting |
 | [docs/permissions.md](docs/permissions.md) | Every permission the tool can use, why, and its risk |
 | [docs/bundle-format.md](docs/bundle-format.md) | Every file in the bundle (for support and tools that read bundles) |
+| [Agent skill](.agents/skills/weaviate-support-bundle/SKILL.md) | How AI agents collect and read bundles, and the rules they follow |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 | [TODO.md](TODO.md) | Planned work |
 

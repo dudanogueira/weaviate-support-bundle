@@ -193,7 +193,7 @@ if kind == "pods":
     if o.startswith("jsonpath"):
         print("weaviate-0\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \nweaviate-1\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \n"
               "weaviate-2\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \ntransformers-inference-abc\tcr.weaviate.io/semitechnologies/transformers-inference:x \n"
-              "customer-app\tnginx:1.27 "); sys.exit(0)
+              "shop-app\tnginx:1.27 "); sys.exit(0)
     out(PODS)
 if kind == "pod" and name == "transformers-inference-abc":
     out(MODULE_POD)
@@ -211,7 +211,7 @@ if kind == "events":
     out({"items": [
         {"type": "Warning", "reason": "OOMKilling", "message": "Memory cgroup out of memory", "involvedObject": {"kind": "Pod", "name": "weaviate-1"}, "count": 3, "lastTimestamp": "2026-11-05T08:00:00Z"},
         {"type": "Warning", "reason": "BackOff", "message": "Back-off restarting failed container", "involvedObject": {"kind": "Pod", "name": "weaviate-2"}, "count": 40, "lastTimestamp": "2026-11-05T09:59:00Z"},
-        {"type": "Normal", "reason": "Pulled", "message": "pulled", "involvedObject": {"kind": "Pod", "name": "customer-app"}, "count": 1, "lastTimestamp": "2026-11-05T09:00:00Z"}]})
+        {"type": "Normal", "reason": "Pulled", "message": "pulled", "involvedObject": {"kind": "Pod", "name": "shop-app"}, "count": 1, "lastTimestamp": "2026-11-05T09:00:00Z"}]})
 if kind == "pvc" and name:
     out({"metadata": {"name": name}, "spec": {"storageClassName": "gp3", "resources": {"requests": {"storage": "100Gi"}}, "accessModes": ["ReadWriteOnce"], "volumeName": "pv-" + name},
          "status": {"phase": "Bound", "capacity": {"storage": "100Gi"}}})
@@ -222,7 +222,7 @@ if kind == "storageclass" and name:
 if kind == "services":
     out({"items": [{"metadata": {"name": "weaviate"}, "spec": {"type": "LoadBalancer", "selector": {"app": "weaviate"}, "ports": [{"port": 80, "targetPort": 8080}], "clusterIP": "10.0.0.1"}},
                    {"metadata": {"name": "weaviate-headless"}, "spec": {"type": "ClusterIP", "clusterIP": "None", "selector": {"app": "weaviate"}, "publishNotReadyAddresses": True}},
-                   {"metadata": {"name": "customer-app"}, "spec": {"selector": {"app": "customer"}}}]})
+                   {"metadata": {"name": "shop-app"}, "spec": {"selector": {"app": "shop"}}}]})
 if kind == "endpointslices":
     out({"items": [{"endpoints": [{"conditions": {"ready": True}}, {"conditions": {"ready": True}}, {"conditions": {"ready": False}}], "ports": [{"port": 8080}]}]})
 if kind == "networkpolicies":

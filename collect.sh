@@ -86,6 +86,7 @@ Privacy
 Other
       --metrics-interval N   Seconds between the two metrics snapshots (default: 30)
   -o, --output DIR           Where to write the bundle (default: current folder)
+      --preflight-only       Show what would be collected, then stop (nothing is collected)
   -y, --yes                  Do not ask for confirmation (for scripts)
   -h, --help                 Show this help
       --version              Show the tool version
@@ -125,7 +126,7 @@ parse_args() {
   NAMESPACE=""; STS_NAME=""; KUBE_CONTEXT=""; PODS_FILTER=""; WEAVIATE_URL=""; INSECURE_TLS=0
   LOG_SINCE="24h"; LOG_FROM=""; LOG_TO=""; MAX_LOG_MB=100
   ONLY_SECTIONS=""; SKIP_SECTIONS=""; INCLUDE_HELM=0; HELM_RELEASE=""; ANONYMIZE=0
-  METRICS_INTERVAL=30; OUTPUT_DIR="."; ASSUME_YES=0
+  METRICS_INTERVAL=30; OUTPUT_DIR="."; ASSUME_YES=0; PREFLIGHT_ONLY=0
   local since_set=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -146,6 +147,7 @@ parse_args() {
       --anonymize)          ANONYMIZE=1; shift ;;
       --metrics-interval)   need_value "$1" "${2:-}"; METRICS_INTERVAL="$2"; shift 2 ;;
       -o|--output)          need_value "$1" "${2:-}"; OUTPUT_DIR="$2"; shift 2 ;;
+      --preflight-only)     PREFLIGHT_ONLY=1; shift ;;
       -y|--yes)             ASSUME_YES=1; shift ;;
       -h|--help)            usage; exit 0 ;;
       --version)            printf '%s %s\n' "$TOOL_NAME" "$TOOL_VERSION"; exit 0 ;;
@@ -210,6 +212,12 @@ main() {
   [ -n "${WEAVIATE_API_KEY:-}" ] && printf '%s\n' "$WEAVIATE_API_KEY" >> "$WORK/secret-values"
 
   show_preflight
+  if [ "$PREFLIGHT_ONLY" = 1 ]; then
+    tunnel_close "${API_TUNNEL_PID:-}"
+    say ""
+    say "  Preflight only: nothing was collected."
+    exit 0
+  fi
   ask_approval
 
   log_line INFO "approved; collecting"
