@@ -184,7 +184,8 @@ your API key, and never opens the anonymization map.
 | Option | What it does | Default |
 |---|---|---|
 | `-n`, `--namespace NAME` | Namespace of the Weaviate StatefulSet | found automatically |
-| `--statefulset NAME` | StatefulSet name, if a namespace has more than one Weaviate | found automatically |
+| `--statefulset NAME` | StatefulSet name, if a namespace has more than one Weaviate, or if your Weaviate image comes from a private registry under another name | found automatically |
+| `--container NAME` | Weaviate container in the StatefulSet, if it cannot be found automatically | found automatically |
 | `--context NAME` | kubectl context to use | current context |
 | `--weaviate-url URL` | Reach Weaviate at this URL instead of a port-forward | port-forward |
 | `--insecure` | Skip TLS certificate checks for `--weaviate-url` | off |
@@ -262,7 +263,8 @@ Every permission is explained in [`docs/permissions.md`](docs/permissions.md).
 
 | Message | What to do |
 |---|---|
-| `No Weaviate StatefulSet found` | Check `kubectl config current-context`, or pass `--namespace` (and `--statefulset`). |
+| `No Weaviate StatefulSet found` | Check `kubectl config current-context`, or pass `--namespace` (and `--statefulset`). If your Weaviate image comes from a private registry under another name, pass `--namespace` and `--statefulset`. |
+| `Cannot tell which container ... runs Weaviate` | Pass `--container` with the name of the Weaviate container. |
 | `Found more than one Weaviate StatefulSet` | Pass `--namespace` (and `--statefulset`) to choose one. |
 | `Cannot list StatefulSets across namespaces` | Your user cannot search all namespaces. Pass `--namespace`. |
 | `Weaviate API ✘ API key missing or not accepted` | Set `WEAVIATE_API_KEY`, or check the key. |

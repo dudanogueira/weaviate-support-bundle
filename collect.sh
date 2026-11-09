@@ -55,7 +55,9 @@ Usage:
 
 Where is Weaviate?
   -n, --namespace NAME       Namespace of the Weaviate StatefulSet (default: found automatically)
-      --statefulset NAME     StatefulSet name, if there is more than one (default: found automatically)
+      --statefulset NAME     StatefulSet name, if there is more than one, or if your Weaviate image
+                             comes from a private registry under another name (default: found automatically)
+      --container NAME       Weaviate container in the StatefulSet (default: found automatically)
       --context NAME         kubectl context to use (default: the current context)
 
 How to reach the Weaviate API
@@ -123,7 +125,7 @@ validate_sections() {
 need_value() { [ -n "${2:-}" ] && [ "${2#-}" = "$2" ] || die "Option $1 needs a value. See --help."; }
 
 parse_args() {
-  NAMESPACE=""; STS_NAME=""; KUBE_CONTEXT=""; PODS_FILTER=""; WEAVIATE_URL=""; INSECURE_TLS=0
+  NAMESPACE=""; STS_NAME=""; CONTAINER_NAME=""; KUBE_CONTEXT=""; PODS_FILTER=""; WEAVIATE_URL=""; INSECURE_TLS=0
   LOG_SINCE="24h"; LOG_FROM=""; LOG_TO=""; MAX_LOG_MB=100
   ONLY_SECTIONS=""; SKIP_SECTIONS=""; INCLUDE_HELM=0; HELM_RELEASE=""; ANONYMIZE=0
   METRICS_INTERVAL=30; OUTPUT_DIR="."; ASSUME_YES=0; PREFLIGHT_ONLY=0
@@ -132,6 +134,7 @@ parse_args() {
     case "$1" in
       -n|--namespace)       need_value "$1" "${2:-}"; NAMESPACE="$2"; shift 2 ;;
       --statefulset)        need_value "$1" "${2:-}"; STS_NAME="$2"; shift 2 ;;
+      --container)          need_value "$1" "${2:-}"; CONTAINER_NAME="$2"; shift 2 ;;
       --context)            need_value "$1" "${2:-}"; KUBE_CONTEXT="$2"; shift 2 ;;
       --pods)               need_value "$1" "${2:-}"; PODS_FILTER="$2"; shift 2 ;;
       --weaviate-url)       need_value "$1" "${2:-}"; WEAVIATE_URL="$2"; shift 2 ;;

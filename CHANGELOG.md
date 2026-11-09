@@ -3,6 +3,22 @@
 All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org); see `docs/releasing.md`.
 
+## Unreleased
+
+- Weaviate images from private registries and mirrors are found: any image
+  whose last path part is `weaviate` counts (for example
+  `registry.example.com/mirror/weaviate:1.30`), not only
+  `semitechnologies/weaviate`.
+- `--statefulset` now selects the StatefulSet by name, whatever its image.
+  Before, a StatefulSet whose image did not match was never found, even when
+  named.
+- New option `--container`: names the Weaviate container when it cannot be
+  found from the image, the name `weaviate`, or a single container. Before,
+  the tool went on without one and silently missed the settings, port and
+  metrics.
+
+No change to the bundle format (schema version 1).
+
 ## 1.1.0 (2026-11-06)
 
 - Agent skill (`.agents/skills/weaviate-support-bundle`, open Agent Skills

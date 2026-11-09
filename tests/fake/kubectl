@@ -12,6 +12,8 @@ CALLS = os.environ.get("FAKE_CALLS", "/dev/null")
 HTTP_PORT = os.environ.get("FAKE_WEAVIATE_PORT", "18080")
 NS = "weaviate"
 SECRET_KEY = "e2e-fixture-apikey-9001"
+# Weaviate image; tests override it to check private-registry images.
+IMG = os.environ.get("FAKE_WEAVIATE_IMAGE", "cr.weaviate.io/semitechnologies/weaviate:1.40.3")
 
 args = [a for a in sys.argv[1:] if not a.startswith("--request-timeout") and not a.startswith("--context")]
 with open(CALLS, "a") as f:
@@ -41,7 +43,7 @@ STS = {
             "metadata": {"labels": {"app": "weaviate", "app.kubernetes.io/name": "weaviate"}},
             "spec": {
                 "containers": [{
-                    "name": "weaviate", "image": "cr.weaviate.io/semitechnologies/weaviate:1.40.3",
+                    "name": "weaviate", "image": IMG,
                     "args": ["--host", "0.0.0.0", "--port", "8080", "--scheme", "http"],
                     "ports": [{"containerPort": 8080, "protocol": "TCP"}, {"name": "metrics", "containerPort": 2112}],
                     "resources": {"requests": {"cpu": "500m", "memory": "2Gi"}, "limits": {"cpu": "2", "memory": "3Gi"}},
@@ -69,7 +71,7 @@ STS = {
 
 def pod(i, ready=True, restarts=0, last=None, waiting=None):
     st = {"name": "weaviate", "ready": ready, "started": True, "restartCount": restarts,
-          "image": "cr.weaviate.io/semitechnologies/weaviate:1.40.3",
+          "image": IMG,
           "state": {"running": {"startedAt": "2026-11-05T09:00:00Z"}}, "lastState": {}}
     if last:
         st["lastState"] = {"terminated": last}
@@ -80,7 +82,7 @@ def pod(i, ready=True, restarts=0, last=None, waiting=None):
                      "creationTimestamp": "2026-11-01T00:00:00Z",
                      "ownerReferences": [{"kind": "StatefulSet", "name": "weaviate"}]},
         "spec": {"nodeName": f"node-{i}", "serviceAccountName": "default",
-                 "containers": [{"name": "weaviate", "image": "cr.weaviate.io/semitechnologies/weaviate:1.40.3",
+                 "containers": [{"name": "weaviate", "image": IMG,
                                  "env": [env("AUTHENTICATION_APIKEY_ALLOWED_KEYS", SECRET_KEY)],
                                  "resources": STS["spec"]["template"]["spec"]["containers"][0]["resources"]}],
                  "volumes": [{"name": "weaviate-data", "persistentVolumeClaim": {"claimName": f"weaviate-data-weaviate-{i}"}},
@@ -186,13 +188,13 @@ o = a[a.index("-o") + 1] if "-o" in a else ""
 
 if kind == "statefulsets":
     if o.startswith("jsonpath"):
-        print("weaviate\tweaviate\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \nother\tpostgres\tpostgres:16 "); sys.exit(0)
+        print("weaviate\tweaviate\t" + IMG + " \nother\tpostgres\tpostgres:16 "); sys.exit(0)
 if kind == "statefulset" and name == "weaviate":
     out(STS)
 if kind == "pods":
     if o.startswith("jsonpath"):
-        print("weaviate-0\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \nweaviate-1\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \n"
-              "weaviate-2\tcr.weaviate.io/semitechnologies/weaviate:1.40.3 \ntransformers-inference-abc\tcr.weaviate.io/semitechnologies/transformers-inference:x \n"
+        print("weaviate-0\t" + IMG + " \nweaviate-1\t" + IMG + " \n"
+              "weaviate-2\t" + IMG + " \ntransformers-inference-abc\tcr.weaviate.io/semitechnologies/transformers-inference:x \n"
               "shop-app\tnginx:1.27 "); sys.exit(0)
     out(PODS)
 if kind == "pod" and name == "transformers-inference-abc":

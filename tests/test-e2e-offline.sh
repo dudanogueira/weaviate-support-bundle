@@ -100,6 +100,27 @@ else
   bad "outage run produced no bundle"; tail -20 "$T/stderr3"
 fi
 
+# Weaviate image from a private registry (mirror), found automatically
+FAKE_WEAVIATE_IMAGE="registry.example.com/mirror/weaviate:1.40.3" \
+  ./collect.sh --yes --only kubernetes --output "$T/out5" > /dev/null 2> "$T/stderr5"
+B5=$(ls -d "$T"/out5/weaviate-support-bundle-*/ 2>/dev/null | head -1)
+[ -n "$B5" ] && jq -e '.container == "weaviate" and (.image | startswith("registry.example.com/"))' "$B5/config/env.json" > /dev/null \
+  && pass "mirrored Weaviate image found automatically" || { bad "mirrored Weaviate image not found"; tail -10 "$T/stderr5"; }
+
+# Image with another name: not guessed, but --statefulset selects it by name
+FAKE_WEAVIATE_IMAGE="registry.example.com/db/vectorstore:1.40.3" \
+  ./collect.sh --yes --only kubernetes --output "$T/out6" > /dev/null 2> "$T/stderr6"
+[ $? -ne 0 ] && grep -q -- '--statefulset' "$T/stderr6" \
+  && pass "unknown image: stops and suggests --statefulset" || bad "unknown image: no stop or no hint"
+FAKE_WEAVIATE_IMAGE="registry.example.com/db/vectorstore:1.40.3" \
+  ./collect.sh --yes --only kubernetes -n weaviate --statefulset weaviate --output "$T/out7" > /dev/null 2> "$T/stderr7"
+B7=$(ls -d "$T"/out7/weaviate-support-bundle-*/ 2>/dev/null | head -1)
+[ -n "$B7" ] && jq -e '.container == "weaviate"' "$B7/config/env.json" > /dev/null \
+  && pass "--statefulset selects a StatefulSet with any image" || { bad "--statefulset with another image name"; tail -10 "$T/stderr7"; }
+./collect.sh --yes --only kubernetes --container nope --output "$T/out8" > /dev/null 2> "$T/stderr8"
+[ $? -ne 0 ] && grep -q "has no container 'nope'" "$T/stderr8" \
+  && pass "--container with a wrong name stops" || bad "--container with a wrong name did not stop"
+
 # The skill's reader on the real bundle, as archive and as folder
 READ=.agents/skills/weaviate-support-bundle/scripts/read-bundle.sh
 for src in "${B%/}.tar.gz" "${B%/}"; do

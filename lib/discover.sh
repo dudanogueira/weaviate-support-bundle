@@ -5,7 +5,12 @@
 # Nothing here is saved to the bundle except the selected StatefulSet and pods.
 # When the tool looks across namespaces, it only reads names and images.
 
-WEAVIATE_IMAGE_RE='semitechnologies/weaviate[:@]'
+# A Weaviate image is any image whose last path part is "weaviate", from any
+# registry: semitechnologies/weaviate:1.30, cr.weaviate.io/semitechnologies/weaviate@sha256:...,
+# registry.example.com/mirror/weaviate:1.30, weaviate:1.30.
+# Always match it against " <image> " (padded with spaces), so the same
+# pattern works in awk (no ^/$ inside groups, for mawk) and in jq.
+WEAVIATE_IMAGE_RE='[ /]weaviate[:@ ]'
 MODULE_IMAGE_RE='semitechnologies/'
 
 check_prerequisites() {
@@ -51,13 +56,18 @@ discover_statefulset() {
       || die "Cannot list StatefulSets across namespaces ($(short_error "$(cat "$WORK/err")")). Run again with --namespace <namespace>."
   fi
 
+  # With --statefulset, the name decides (the image may come from a private
+  # registry with any name). Without it, the image decides.
   local matches
   matches=$(awk -F '\t' -v re="$WEAVIATE_IMAGE_RE" -v want="$STS_NAME" \
-    '$3 ~ re && (want == "" || $2 == want) { print $1 "/" $2 }' "$list")
+    '(want != "" && $2 == want) || (want == "" && (" " $3) ~ re) { print $1 "/" $2 }' "$list")
   local count
   count=$(printf '%s' "$matches" | grep -c . )
   if [ "$count" -eq 0 ]; then
-    die "No Weaviate StatefulSet found in $scope${STS_NAME:+ named '$STS_NAME'}. Check --namespace / --statefulset, or that kubectl points at the right cluster ($CONTEXT_NAME)."
+    if [ -n "$STS_NAME" ]; then
+      die "No StatefulSet named '$STS_NAME' found in $scope. Check --namespace / --statefulset, or that kubectl points at the right cluster ($CONTEXT_NAME)."
+    fi
+    die "No Weaviate StatefulSet found in $scope. Check --namespace, or that kubectl points at the right cluster ($CONTEXT_NAME). If your Weaviate image has another name (for example in a private registry), name the StatefulSet with --namespace and --statefulset."
   fi
   if [ "$count" -gt 1 ]; then
     say ""
@@ -71,8 +81,24 @@ discover_statefulset() {
   kc get statefulset "$STS_NAME" -n "$NAMESPACE" -o json > "$RAW/statefulset.json" 2> "$WORK/err" \
     || die "Cannot read StatefulSet $NAMESPACE/$STS_NAME: $(short_error "$(cat "$WORK/err")")"
 
-  WEAVIATE_CONTAINER=$(jq -r --arg re "$WEAVIATE_IMAGE_RE" \
-    '[.spec.template.spec.containers[] | select(.image | test($re)) | .name][0] // empty' "$RAW/statefulset.json")
+  # The Weaviate container: --container, else the one with a Weaviate image,
+  # else the one named "weaviate" (Helm chart), else the only container.
+  local containers
+  containers=$(jq -r '[.spec.template.spec.containers[].name] | join(", ")' "$RAW/statefulset.json")
+  if [ -n "$CONTAINER_NAME" ]; then
+    list_has "$(printf '%s' "$containers" | tr -d ' ')" "$CONTAINER_NAME" \
+      || die "StatefulSet $NAMESPACE/$STS_NAME has no container '$CONTAINER_NAME'. Containers: $containers"
+    WEAVIATE_CONTAINER="$CONTAINER_NAME"
+  else
+    WEAVIATE_CONTAINER=$(jq -r --arg re "$WEAVIATE_IMAGE_RE" \
+      '.spec.template.spec.containers as $cs
+       | [$cs[] | select((" " + .image + " ") | test($re)) | .name][0]
+         // [$cs[] | select(.name == "weaviate") | .name][0]
+         // (if ($cs | length) == 1 then $cs[0].name else null end)
+         // empty' "$RAW/statefulset.json")
+    [ -n "$WEAVIATE_CONTAINER" ] \
+      || die "Cannot tell which container in StatefulSet $NAMESPACE/$STS_NAME runs Weaviate (containers: $containers). Name it with --container."
+  fi
   HTTP_PORT=$(jq -r --arg c "$WEAVIATE_CONTAINER" \
     '[.spec.template.spec.containers[] | select(.name == $c) | .ports[]? | select(.name == "http") | .containerPort][0] // 8080' \
     "$RAW/statefulset.json")
@@ -105,7 +131,7 @@ discover_pods() {
   MODULE_PODS=""
   if kc get pods -n "$NAMESPACE" -o "jsonpath=$jp" > "$RAW/pod-names.tsv" 2>/dev/null; then
     MODULE_PODS=$(awk -F '\t' -v re="$MODULE_IMAGE_RE" -v wre="$WEAVIATE_IMAGE_RE" -v skip=" $WEAVIATE_PODS " \
-      '$2 ~ re && $2 !~ wre && index(skip, " " $1 " ") == 0 { print $1 }' "$RAW/pod-names.tsv" | sort | tr '\n' ' ')
+      '$2 ~ re && (" " $2) !~ wre && index(skip, " " $1 " ") == 0 { print $1 }' "$RAW/pod-names.tsv" | sort | tr '\n' ' ')
     MODULE_PODS="${MODULE_PODS% }"
   fi
 
