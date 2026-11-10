@@ -57,7 +57,6 @@ All notable changes are listed here. Versions follow
   that are not multi-tenant.
 - New red flag `REPLICA_OBJECT_COUNT_MISMATCH`: replicas of a shard report
   different object counts.
-
 - New opt-in `--include-profiling` (with `--include-heap` and
   `--profile-seconds`): collects Go profiles from the Weaviate pods into
   `pods/<pod>/profiles/`. The safety gate opens the debug port only for the exact

@@ -15,9 +15,18 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/wsb-e2e.XXXXXX")
 PORT=$((20000 + RANDOM % 20000))
 python3 tests/fake/weaviate_server.py "$PORT" "$T/http-violations" &
 SERVER=$!
+# wait_server <port>: a slow machine can take more than a moment to start python.
+wait_server() {
+  local i=0
+  while [ "$i" -lt 150 ]; do
+    curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$1/v1/.well-known/live" && return 0
+    sleep 0.2; i=$((i + 1))
+  done
+  echo "FAIL: the fake Weaviate on port $1 did not start"; fail=1
+}
 cleanup() { kill "$SERVER" 2>/dev/null; pkill -f "$T/bin/kubectl port-forward" 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
-sleep 1
+wait_server "$PORT"
 
 mkdir -p "$T/bin" "$T/out" "$T/tmp"
 ln -s "$PWD/tests/fake/kubectl" "$T/bin/kubectl"
@@ -101,7 +110,7 @@ fi
 PORT2=$((PORT + 1))
 python3 tests/fake/weaviate_server.py "$PORT2" "$T/http-violations" schema-down &
 SERVER2=$!
-sleep 1
+wait_server "$PORT2"
 FAKE_WEAVIATE_PORT="$PORT2" ./collect.sh --yes --anonymize --only weaviate,logs --metrics-interval 5 --output "$T/out3" > /dev/null 2> "$T/stderr3"
 kill "$SERVER2" 2>/dev/null
 B3=$(ls -d "$T"/out3/weaviate-support-bundle-*/ 2>/dev/null | head -1)
@@ -189,12 +198,12 @@ jq -e '.logs[] | select(.pod == "weaviate-1" and .kind == "current") | .partial 
 PORT3=$((PORT + 2))
 python3 tests/fake/weaviate_server.py "$PORT3" "$T/http-violations3" api-failing &
 SERVER3=$!
-sleep 1
+wait_server "$PORT3"
 FAKE_WEAVIATE_PORT="$PORT3" ./collect.sh --yes --only weaviate --metrics-interval 5 --output "$T/out12" > /dev/null 2> "$T/stderr12"
 kill "$SERVER3" 2>/dev/null
 B12=$(ls -d "$T"/out12/weaviate-support-bundle-*/ 2>/dev/null | head -1)
 grep -q '/shards' "$T/http-violations3.calls" && ! grep -qE '/v1/tasks|/v1/authz/roles|/v1/users/own-info' "$T/http-violations3.calls" \
-  && pass "API failures: calls stop after 3 failures in a row" || bad "API failures: calls did not stop: $(tr '\n' ' ' < "$T/http-violations3.calls")"
+  && pass "API failures: calls stop after 3 failures in a row" || { bad "API failures: calls did not stop: $(tr '\n' ' ' < "$T/http-violations3.calls" 2>/dev/null)"; tail -25 "$T/stderr12"; }
 jq -e 'any(.steps[]; .name == "roles" and .status == "unavailable" and (.detail | test("skipped after 3")))' "$B12/manifest.json" > /dev/null \
   && pass "API failures: skipped steps are reported" || bad "API failures: skipped steps not reported"
 jq -e '.config.class == "Article" and (.shards.error | test("500"))' "$B12/weaviate/collections/Article.json" > /dev/null \
@@ -267,7 +276,7 @@ B15=$(ls -d "$T"/out15/weaviate-support-bundle-*/ 2>/dev/null | head -1)
 PORT4=$((PORT + 3))
 python3 tests/fake/weaviate_server.py "$PORT4" "$T/http-violations4" debug-off &
 SERVER4=$!
-sleep 1
+wait_server "$PORT4"
 FAKE_WEAVIATE_PORT="$PORT4" ./collect.sh --yes --include-profiling --profile-seconds 5 --only weaviate --metrics-interval 5 --output "$T/out17" > /dev/null 2> "$T/stderr17"
 rc=$?
 kill "$SERVER4" 2>/dev/null
