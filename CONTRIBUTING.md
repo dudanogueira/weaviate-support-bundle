@@ -19,9 +19,16 @@ bundles, so the output format must stay stable (see `docs/bundle-format.md`).
    - Only `lib/guard.sh` runs `kubectl` or `curl`. Everything else calls
      `kc`, `kc_raw_get`, `tunnel_open` or `http_get`.
    - `kc` allows `get`, `logs`, `version`, `config current-context`. Do not
-     widen it. `kc_raw_get` allows a fixed list of paths.
-   - `http_get` is GET only and refuses Weaviate's debug port (6060), whose
-     endpoints can change state.
+     widen it. `kc get` refuses Secrets unless `--include-helm` is set.
+     `kc_raw_get` allows a fixed list of paths, each with exactly one
+     Kubernetes name in it (no `/`).
+   - `http_get` is GET only, only for Weaviate's REST API (`/v1/...`) and
+     `/metrics`, and refuses Weaviate's debug port (6060), whose endpoints can
+     change state. `tunnel_open` refuses the debug port too
+     (`GO_PROFILING_PORT`, default 6060).
+     The one exception: with `--include-profiling`, the exact pprof GETs in
+     `_pprof_allowed`, through a local tunnel, without the API key. Do not
+     widen that list; never add `cmdline`, `trace` or other `/debug` paths.
    - No `kubectl exec`, even for "read-only" commands like `df`.
    - `tests/check-read-only.sh` enforces this. Never weaken that test to make
      a change pass.
@@ -71,6 +78,7 @@ lib/metrics.sh        per-pod tunnels: health checks and two metrics snapshots
 lib/logs.sh           current and previous container logs
 lib/disk.sh           volume usage via kubelet stats (optional permission)
 lib/helm.sh           Helm release info (only with --include-helm)
+lib/profiling.sh      Go profiles from the debug port (only with --include-profiling)
 lib/summary.sh        manifest.json, findings.json, SUMMARY.md
 lib/finalize.sh       final redaction pass, anonymization, archive
 lib/jq/redact.jq      redaction rules (names and content patterns)
@@ -84,10 +92,10 @@ AGENTS.md             entry point for AI agents: the skill to collect/read bundl
                       the agent skill (Agent Skills format): SKILL.md, scripts/read-bundle.sh,
                       references/findings.md (every red-flag code), references/weaviate-facts.md
 .claude/skills/       symlink to the skill, so Claude Code finds it
-TODO.md               planned work (next: optional pod profiling)
 docs/                 bundle format (the contract), permissions, releasing
 tests/                static check, guard, redaction, offline end-to-end (fake kubectl + fake Weaviate)
 tests/kind/run.sh     real-cluster test: kind + official Helm chart, 3 replicas, broken pods
+tests/playground/     local kind cluster with Weaviate and scenarios that break it (for contributors)
 .github/workflows/    ci.yml (every PR and push to main), release.yml (on a v*.*.* tag)
 ```
 
@@ -124,6 +132,7 @@ bash tests/kind/run.sh       # real cluster, about 5 minutes (docker, kind, helm
 - `tests/check-read-only.sh`: static: no direct kubectl/curl, only read verbs, GET only.
 - `tests/test-guard.sh`: the gate blocks write verbs, raw paths, debug port, non-HTTP URLs.
 - `tests/test-redaction.sh`: planted secrets never survive; safe values do.
+- `tests/test-findings.sh`: red-flag rules on hand-written facts, for edge cases.
 - `tests/test-skill.sh`: SKILL.md format, every finding code documented, and
   `read-bundle.sh` refusing symlinks, `..`, absolute paths and hostile archives.
 - `tests/test-e2e-offline.sh`: full run against `tests/fake/kubectl` and
@@ -135,6 +144,36 @@ bash tests/kind/run.sh       # real cluster, about 5 minutes (docker, kind, helm
   end. `WEAVIATE_VERSION=1.40.3` picks the image; `OUT=/some/dir` keeps the bundles.
 
 CI runs all of these on every pull request (`.github/workflows/ci.yml`).
+
+## Playground
+
+`tests/playground/playground.sh` keeps a kind cluster with Weaviate running,
+so you can break it in known ways and see what `collect.sh` makes of it.
+Use it to reproduce a bug and to prove the fix.
+
+```bash
+tests/playground/playground.sh up                  # kind + Helm chart + sample data, about 5 minutes
+tests/playground/playground.sh list                # scenarios and what each should flag
+tests/playground/playground.sh scenario oom        # break something
+tests/playground/playground.sh collect             # run collect.sh with a read-only (viewer) key
+tests/playground/playground.sh revert oom
+tests/playground/playground.sh verify --all        # apply, collect, check findings, revert; exit code
+tests/playground/playground.sh down
+```
+
+- It writes to the cluster it created, and only to that one: its own
+  kubeconfig in `.playground/` (gitignored), only kind clusters named `wsb-*`.
+  Like `tests/kind/run.sh`, it is test tooling: the read-only rules above are
+  for `collect.sh`, and the support skill never runs it.
+- `tests/kind/run.sh` uses the same setup (`tests/playground/lib.sh`), so CI
+  tests what the playground runs.
+- **Add a scenario:** a file `tests/playground/scenarios/<name>.sh` that sets
+  `SC_DESC`, `SC_KIND` (`pod`: break one pod through the StatefulSet template;
+  `config`: keep a template change; `custom`: your own `sc_apply`/`sc_revert`),
+  `SC_EXPECT` (finding codes), and optionally `SC_ABSENT`, `SC_NO_HIGH`,
+  `sc_wait` and `sc_check <bundle>`. See `lib.sh` for the details and the
+  existing scenarios for examples. When you add a red flag, add a scenario that
+  makes it fire.
 
 ## Releases
 

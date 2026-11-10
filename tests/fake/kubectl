@@ -12,8 +12,15 @@ CALLS = os.environ.get("FAKE_CALLS", "/dev/null")
 HTTP_PORT = os.environ.get("FAKE_WEAVIATE_PORT", "18080")
 NS = "weaviate"
 SECRET_KEY = "e2e-fixture-apikey-9001"
+MODULE_SECRET = "e2e-fixture-modtoken-9006"  # env of the module pod; its logs print it
 
 args = [a for a in sys.argv[1:] if not a.startswith("--request-timeout") and not a.startswith("--context")]
+# Record each --context exactly as received (one argument), so tests can check
+# that the tool targets the context the user named.
+for a in sys.argv[1:]:
+    if a.startswith("--context"):
+        with open(CALLS + ".contexts", "a") as f:
+            f.write(a + "\n")
 with open(CALLS, "a") as f:
     f.write(" ".join(args) + "\n")
 
@@ -78,6 +85,7 @@ def pod(i, ready=True, restarts=0, last=None, waiting=None):
     return {
         "metadata": {"name": f"weaviate-{i}", "namespace": NS, "labels": {"app": "weaviate"},
                      "creationTimestamp": "2026-11-01T00:00:00Z",
+                     "annotations": {"backup.example.com/encryption-passphrase": "e2e-fixture-annot-9007", "prometheus.io/port": "2112"},
                      "ownerReferences": [{"kind": "StatefulSet", "name": "weaviate"}]},
         "spec": {"nodeName": f"node-{i}", "serviceAccountName": "default",
                  "containers": [{"name": "weaviate", "image": "cr.weaviate.io/semitechnologies/weaviate:1.40.3",
@@ -98,7 +106,8 @@ PODS = {"items": [
 
 MODULE_POD = {
     "metadata": {"name": "transformers-inference-abc", "namespace": NS, "labels": {"app": "transformers-inference"}},
-    "spec": {"nodeName": "node-0", "containers": [{"name": "t2v", "image": "cr.weaviate.io/semitechnologies/transformers-inference:sentence-transformers-all-MiniLM-L6-v2"}]},
+    "spec": {"nodeName": "node-0", "containers": [{"name": "t2v", "image": "cr.weaviate.io/semitechnologies/transformers-inference:sentence-transformers-all-MiniLM-L6-v2",
+                                                       "env": [env("HUGGINGFACE_API_TOKEN", MODULE_SECRET)]}]},
     "status": {"phase": "Running", "qosClass": "BestEffort", "conditions": [{"type": "Ready", "status": "True"}],
                "containerStatuses": [{"name": "t2v", "ready": True, "restartCount": 0, "state": {"running": {}}, "lastState": {}}]},
 }
@@ -139,8 +148,13 @@ if verb == "version":
 
 if verb == "port-forward":
     ports = [x[1:] for x in a if x.startswith(":")]
+    target = next((x[4:] for x in a if x.startswith("pod/")), "")
+    if target == os.environ.get("FAKE_PF_FAIL"):
+        err("error: unable to forward: pod is gone")
+    # FAKE_PF_DEAD: the tunnel opens, but nothing answers behind it.
+    local_port = "1" if target == os.environ.get("FAKE_PF_DEAD") else HTTP_PORT
     for p in ports:
-        print(f"Forwarding from 127.0.0.1:{HTTP_PORT} -> {p}", flush=True)
+        print(f"Forwarding from 127.0.0.1:{local_port} -> {p}", flush=True)
     time.sleep(600)
     sys.exit(0)
 
@@ -153,8 +167,26 @@ if verb == "logs":
         err('previous terminated container "weaviate" in pod "%s" not found' % podname)
     if "--tail=1" in a:
         print("2026-11-05T10:00:00.000000000Z probe"); sys.exit(0)
+    if podname == "transformers-inference-abc":
+        print('2026-11-05T08:00:00.000000000Z loading model, hub credential ' + MODULE_SECRET)
+        sys.exit(0)
+    if os.environ.get("FAKE_LOG_FAIL") and podname == "weaviate-1":
+        # A connection lost partway: some output, then an error.
+        print("2026-11-05T09:00:00.000000000Z {\"msg\":\"partial line one\"}", flush=True)
+        print("2026-11-05T09:00:01.000000000Z {\"msg\":\"partial line two\"}", flush=True)
+        err("error: context deadline exceeded")
+    if os.environ.get("FAKE_BIG_LOG") and podname == "weaviate-0":
+        # About 1.8 MB over 8 hours. Like real kubectl, --limit-bytes keeps the START.
+        lines = [f"2026-11-05T{i // 3600:02d}:{i // 60 % 60:02d}:{i % 60:02d}.000000000Z {{\"msg\":\"seq {i:06d} padding padding padding\"}}" for i in range(30000)]
+        body = "\n".join(lines) + "\n"
+        lim = [x for x in a if x.startswith("--limit-bytes=")]
+        if lim:
+            body = body[:int(lim[0].split("=")[1])]
+        sys.stdout.write(body); sys.exit(0)
     print('2026-11-05T07:30:00.000000000Z {"level":"info","msg":"Created shard tenanted_TenantAlpha in 9ms"}')
     print('2026-11-05T07:31:00.000000000Z {"level":"info","msg":"restored data from disk","shard":"TenantDelta","user":"bob@example.com"}')
+    # Secrets that only the Helm values and the ConfigMap know (no pattern catches them).
+    print('2026-11-05T07:32:00.000000000Z {"level":"info","msg":"module ready, key e2e-fixture-helmopenai-9005, config key e2e-fixture-cmkey-9006"}')
     for h in range(8, 13):
         print(f'2026-11-05T{h:02d}:00:00.000000000Z {{"level":"info","msg":"tick {h} Authorization: Bearer abcdefghijkl123456","tenant":"TenantAlpha"}}')
     sys.exit(0)

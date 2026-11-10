@@ -104,5 +104,12 @@ every file in the bundle.
 | `/v1/.well-known/live`, `/v1/.well-known/ready` | Per-pod health |
 | `:2112/metrics` | Prometheus metrics, if enabled |
 
-The tool never calls Weaviate's debug port (6060), because some of its
-endpoints change state. The safety gate blocks it.
+By default the tool never calls Weaviate's debug port (`GO_PROFILING_PORT`,
+default 6060), because some of its endpoints change state. The safety gate
+blocks it.
+
+With `--include-profiling` the gate allows only these GETs on that port, through
+a local port-forward and without the API key: `/debug/pprof/profile?seconds=N`
+(5 to 120), `goroutine`, `goroutine?debug=2`, `block`, `mutex`, `threadcreate`,
+and `heap` with `--include-heap`. Never `cmdline`, `trace` or any other `/debug`
+path. The CPU profile adds some load on the pods while it runs.

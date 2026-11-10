@@ -69,7 +69,7 @@ collect_k8s_statefulset() {
 POD_FILTER='
   {name: .metadata.name,
    labels: .metadata.labels,
-   annotations: ((.metadata.annotations // {}) | del(.["kubectl.kubernetes.io/last-applied-configuration"])),
+   annotations: ((.metadata.annotations // {}) | del(.["kubectl.kubernetes.io/last-applied-configuration"]) | redact_tree),
    created: .metadata.creationTimestamp,
    owner: ((.metadata.ownerReferences // [])[0] | if . then "\(.kind)/\(.name)" else null end),
    node: .spec.nodeName,
@@ -94,6 +94,10 @@ POD_FILTER='
 collect_k8s_pods() {
   remember_env_secrets "$RAW/weaviate-pods.json" "pods"
   remember_env_secrets "$RAW/module-pods.json" "pods"
+  # Pod annotations can hold secrets (vault, backup tools, ...): note which
+  # ones are masked by name, for redactions.txt.
+  jqr -r 'include "redact"; [.items[] | .metadata.annotations // {} | secret_keys_in_tree[]] | unique[] | "kubernetes/pods.json: annotation \(.)"' \
+    "$RAW/weaviate-pods.json" "$RAW/module-pods.json" >> "$WORK/redacted-fields" 2>/dev/null
   jqr --arg sel " $SEL_WEAVIATE_PODS " --arg mods " $SEL_MODULE_PODS " -n \
     --slurpfile w "$RAW/weaviate-pods.json" --slurpfile m "$RAW/module-pods.json" \
     "include \"redact\";
@@ -258,12 +262,29 @@ collect_k8s_events() {
   step_detail "$(jq 'length' "$STAGE/kubernetes/events.json") event(s)$node_note"
 }
 
+# Names of the config maps the Weaviate StatefulSet uses.
+weaviate_configmaps() {
+  jq -r '.spec.template.spec | ([.volumes[]? | .configMap.name // empty]
+         + [.containers[], (.initContainers // [])[] | (.envFrom // [])[] | .configMapRef.name // empty]
+         + [.containers[] | (.env // [])[] | .valueFrom.configMapKeyRef.name // empty]) | unique | .[]' \
+    "$RAW/statefulset.json"
+}
+
+# Secret values in those config maps go on the scrub list, whatever sections
+# run: with --only logs the config maps are not collected, but a log can still
+# print a value from them.
+remember_configmap_secrets() {
+  local c
+  for c in $(weaviate_configmaps); do
+    kc get configmap "$c" -n "$NAMESPACE" -o json 2>/dev/null \
+      | jqr -r 'include "redact"; (.data // {})[] | secret_values_in_config_value[]' >> "$WORK/secret-values" 2>/dev/null
+  done
+  return 0
+}
+
 collect_k8s_configmaps() {
   local cms
-  cms=$(jq -r '.spec.template.spec | ([.volumes[]? | .configMap.name // empty]
-               + [.containers[], (.initContainers // [])[] | (.envFrom // [])[] | .configMapRef.name // empty]
-               + [.containers[] | (.env // [])[] | .valueFrom.configMapKeyRef.name // empty]) | unique | .[]' \
-        "$RAW/statefulset.json")
+  cms=$(weaviate_configmaps)
   [ -n "$cms" ] || { step_detail "none mounted"; return 10; }
   printf '{}' > "$RAW/cms.json"
   local c got=0 rc=0

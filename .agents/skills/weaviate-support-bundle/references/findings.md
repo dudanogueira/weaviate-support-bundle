@@ -197,11 +197,41 @@ older names `OFFLOADING`, `ONLOADING`.
 - Check: the tenants in the collection file, and the logs for those tenant
   names. A second bundle later shows whether they are stuck.
 
+## SCHEMA_MT_CANDIDATES
+
+`info`. Two or more collections that are not multi-tenant have identical
+properties (names, tokenization and data types). Many collections with the same
+shape often mean one collection per end user, which costs memory and startup
+time. One multi-tenant collection is usually a better fit.
+- Check: the collections named in the flag (`--show weaviate/collections/<name>.json`)
+  and whether each one really holds one end user's data. Same properties alone
+  do not prove that: vector index settings can differ on purpose.
+- Options: migrating to a multi-tenant collection means moving data; it is the
+  user's decision.
+
 ## REPLICATION_OP_ERRORS
 
 `warn`. A replica copy or move operation reports errors.
 - Check: the error messages in `weaviate/replication.json`, and the health of
   the source and target nodes.
+
+## EMPTY_SHARDS
+
+`info`. Loaded shards with zero objects, in collections that are not
+multi-tenant (a tenant's shard starts empty by design, and an unloaded shard
+reports no count). Often a new collection, or more shards than the data needs.
+Counts in `/v1/nodes` update in the background.
+- Check: the shard count and object count of the collection in `SUMMARY.md`.
+
+## REPLICA_OBJECT_COUNT_MISMATCH
+
+`warn`. The replicas of a shard report different object counts in `/v1/nodes`.
+Counts lag a little, so a small difference right after writes is normal. A
+lasting one can mean async replication is off or behind, or a node missed writes.
+- Check: `ASYNC_REPLICATION_DISABLED` in `config/env.json`, node health
+  (`weaviate/nodes.json`), and restarts of the node with the lower count. A
+  second bundle later shows whether the difference stays.
+- Options: repairing replicas changes the cluster; it is the user's decision.
 
 ## BACKUP_FAILED
 

@@ -82,6 +82,11 @@ server, so their fields follow the
 }
 ```
 
+A log over `--max-log-mb` has `"truncated": true` and `"kept": "newest"`: the end
+of the log is kept, the start is cut.
+If reading a log stopped partway (timeout, lost connection), it has
+`"partial": true` and holds what arrived.
+
 Step `status` is one of: `ok`, `skipped` (not applicable or turned off),
 `forbidden` (no permission), `not_found` (not available on this cluster or
 version), `unavailable` (feature off or unreachable), `error`.
@@ -126,6 +131,9 @@ look), `info` (worth knowing). `file` is the bundle file with the evidence.
 | `REPLICATION_FACTOR_TOO_HIGH` | high | Replication factor > number of nodes |
 | `TENANTS_IN_TRANSITION` | warn | Tenants in a transitional state (…ING) |
 | `REPLICATION_OP_ERRORS` | warn | Replica copy/move operation reports errors |
+| `SCHEMA_MT_CANDIDATES` | info | Two or more collections that are not multi-tenant have the same properties |
+| `EMPTY_SHARDS` | info | Loaded shards with no objects, in collections that are not multi-tenant |
+| `REPLICA_OBJECT_COUNT_MISMATCH` | warn | Replicas of a loaded shard report different object counts |
 | `BACKUP_FAILED` | warn | A backup in the list has status FAILED |
 | `DISK_ALMOST_FULL` | high | Volume ≥ DISK_USE_READONLY_PERCENTAGE (default 90) |
 | `DISK_HIGH` | warn | Volume ≥ DISK_USE_WARNING_PERCENTAGE (default 80) |
@@ -147,9 +155,18 @@ look), `info` (worth knowing). `file` is the bundle file with the evidence.
 values) is present only when a metric has 20 series or fewer. Only a fixed
 list of key metrics is kept (see `METRICS_KEEP` in `lib/metrics.sh`).
 
+With `--include-profiling`, `pods/<pod>/profiles/` holds Go profiles (`cpu.pprof`,
+`goroutine.pprof`, `goroutine.txt`, `block.pprof`, `mutex.pprof`,
+`threadcreate.pprof`, and `heap.pprof` with `--include-heap`; a profile with no
+data is not saved). `manifest.json` has `run.include_profiling` and a `profiles`
+array of `{pod, profile, file, bytes, captured_at, seconds}` (`seconds` for
+`cpu` only). `.pprof` files are binary and are not redacted.
+
 ## Redaction markers
 
 Redacted values are replaced with `[REDACTED]`, `[REDACTED JWT]`,
 `[REDACTED AWS KEY]` or `[REDACTED PRIVATE KEY]`. With `--anonymize`, tenant
 names become `tenant-000001`, … and user names `user-001`, …; the mapping is
-written next to the archive, never inside it.
+written next to the archive, never inside it. Collection names and
+infrastructure details (kube context, node names, IP addresses) are not
+anonymized.

@@ -6,13 +6,20 @@ API key on API calls, and records any non-GET request as a violation.
 Usage: weaviate_server.py <port> <violations-file> [schema-down]
 With "schema-down", schema and user endpoints return HTTP 500, like a
 cluster that lost Raft quorum.
+With "api-failing", per-collection and later endpoints return HTTP 500, and
+every API request is recorded in <violations-file>.calls.
+With "debug-off", /debug answers 404, like DEBUG_ENDPOINTS_ENABLED=false.
+Every /debug request is recorded in <violations-file>.debug; a /debug path
+outside the profiling allow-list, or one sent with the API key, is a violation.
 """
-import json, sys
+import gzip, json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(sys.argv[1])
 VIOLATIONS = sys.argv[2]
 SCHEMA_DOWN = len(sys.argv) > 3 and sys.argv[3] == "schema-down"
+API_FAILING = len(sys.argv) > 3 and sys.argv[3] == "api-failing"
+DEBUG_OFF = len(sys.argv) > 3 and sys.argv[3] == "debug-off"
 API_KEY = "e2e-fixture-apikey-9001"
 
 def shard(cls, name, n, status="READY", queue=0):
@@ -24,6 +31,8 @@ NODES = {"nodes": [
      "operationalMode": "ReadWrite",
      "stats": {"objectCount": 1000, "shardCount": 3},
      "shards": [shard("Article", f"s{i}", 1000, "READONLY" if i == 2 else "READY", 150000 if i == 1 else 0),
+                shard("Article", "sEmpty", 0),
+                shard("Article", "sDrift", 100 + i),
                 shard("Tenanted", "TenantAlpha", 10), shard("Tenanted", "TenantBeta", 10)]}
     for i in range(3)]}
 
@@ -34,6 +43,10 @@ SCHEMA = {"classes": [
      "invertedIndexConfig": {"bm25": {"b": 0.75, "k1": 1.2}},
      "moduleConfig": {"text2vec-transformers": {"vectorizeClassName": False}},
      "properties": [{"name": "title", "dataType": ["text"], "tokenization": "word"}]},
+    # Same properties as Article (blank tokenization = "word"): a multi-tenancy candidate.
+    {"class": "ArticleCopy", "vectorizer": "none", "vectorIndexType": "flat", "vectorIndexConfig": {"distance": "dot"},
+     "replicationConfig": {"factor": 1}, "multiTenancyConfig": {"enabled": False},
+     "properties": [{"name": "title", "dataType": ["text"], "tokenization": None}]},
     {"class": "Tenanted", "vectorConfig": {
         "main": {"vectorizer": {"none": {}}, "vectorIndexType": "dynamic",
                  "vectorIndexConfig": {"distance": "dot", "threshold": 10000, "hnsw": {"pq": {"enabled": True}}, "flat": {"bq": {"enabled": True}}}},
@@ -51,8 +64,11 @@ ROUTES = {
          "leaderId": "weaviate-0", "raft": {"state": "Leader" if i == 0 else "Follower", "term": 3, "appliedIndex": 100 + i}} for i in range(2)]},
     "/v1/schema": SCHEMA,
     "/v1/schema/Article/shards": [{"name": f"s{i}", "status": "READY", "vectorQueueSize": 0} for i in range(3)],
+    "/v1/schema/ArticleCopy/shards": [{"name": "c0", "status": "READY", "vectorQueueSize": 0}],
     "/v1/schema/Tenanted/tenants": [{"name": "TenantAlpha", "activityStatus": "ACTIVE"}, {"name": "TenantBeta", "activityStatus": "INACTIVE"},
-                                    {"name": "TenantGamma", "activityStatus": "OFFLOADING"}],
+                                    {"name": "TenantGamma", "activityStatus": "OFFLOADING"},
+                                    # A tenant named like a JSON key: --anonymize must not rewrite the keys.
+                                    {"name": "name", "activityStatus": "ACTIVE"}],
     "/v1/aliases": {"aliases": [{"alias": "News", "class": "Article"}]},
     "/v1/replication/replicate/list": [{"id": "op1", "collection": "Article", "shard": "s1", "sourceNode": "weaviate-0", "targetNode": "weaviate-2",
                                         "type": "COPY", "status": {"state": "HYDRATING", "errors": [{"message": "target unreachable"}]}}],
@@ -73,6 +89,16 @@ queries_durations_ms{class_name="Article",quantile="0.5"} 3
 some_other_metric_we_drop 1
 """
 
+# block is empty: Go has nothing to report unless the rate is set.
+PPROF = {
+    "/debug/pprof/goroutine": gzip.compress(b"fake goroutine profile"),
+    "/debug/pprof/goroutine?debug=2": b"goroutine 1 [running]:\nmain.login(e2e-fixture-apikey-9001)\n",
+    "/debug/pprof/block": b"",
+    "/debug/pprof/mutex": gzip.compress(b"fake mutex profile"),
+    "/debug/pprof/threadcreate": gzip.compress(b"fake threadcreate profile"),
+    "/debug/pprof/heap": gzip.compress(b"fake heap profile"),
+}
+
 class H(BaseHTTPRequestHandler):
     calls = 0
     def log_message(self, *a): pass
@@ -81,8 +107,22 @@ class H(BaseHTTPRequestHandler):
             f.write(f"{self.command} {self.path}\n")
         self.send_response(405); self.end_headers()
     do_POST = do_PUT = do_PATCH = do_DELETE = _bad
+    def _debug(self, p):
+        with open(VIOLATIONS + ".debug", "a") as f:
+            f.write(p + "\n")
+        allowed = p in PPROF or p.startswith("/debug/pprof/profile?seconds=")
+        if not allowed or self.headers.get("Authorization"):
+            with open(VIOLATIONS, "a") as f:
+                f.write(f"GET {p} auth={bool(self.headers.get('Authorization'))}\n")
+            self.send_response(403); self.end_headers(); return
+        if DEBUG_OFF:
+            self.send_response(404); self.end_headers(); return
+        body = PPROF.get(p, gzip.compress(b"fake cpu profile"))
+        self.send_response(200); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
         p = self.path
+        if p.startswith("/debug"):
+            return self._debug(p)
         if p == "/metrics":
             H.calls += 1
             body = (METRICS % (1000 * H.calls, 100 * H.calls)).encode()
@@ -93,6 +133,11 @@ class H(BaseHTTPRequestHandler):
             self.send_response(401); self.end_headers(); self.wfile.write(b'{"error":"unauthorized"}'); return
         if SCHEMA_DOWN and (p.startswith("/v1/schema") or p == "/v1/users/own-info"):
             self.send_response(500); self.end_headers(); self.wfile.write(b'{"error":"leader not found"}'); return
+        if API_FAILING:
+            with open(VIOLATIONS + ".calls", "a") as f:
+                f.write(p + "\n")
+            if p.endswith("/shards") or p.endswith("/tenants") or p in ("/v1/aliases", "/v1/tasks", "/v1/authz/roles", "/v1/users/own-info"):
+                self.send_response(500); self.end_headers(); self.wfile.write(b'{"error":"internal"}'); return
         if p == "/v1/authz/roles":
             self.send_response(403); self.end_headers(); return
         if p not in ROUTES:

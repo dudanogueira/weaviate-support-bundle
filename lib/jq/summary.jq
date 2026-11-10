@@ -154,9 +154,15 @@ def summary($facts; $findings):
   "",
   (if ($facts.logs | length) == 0 then "_No logs collected._" else
     table(["Pod", "Container", "Kind", "Lines", "First line", "Last line", "File"];
-      [$facts.logs[] | [.pod, .container, .kind, .lines, .first, .last, "[`\(.file)`](\(.file))\(if .truncated then " (cut at size limit)" else "" end)"]])
+      [$facts.logs[] | [.pod, .container, .kind, .lines, .first, .last, "[`\(.file)`](\(.file))\(if .truncated then " (cut at size limit, newest lines kept)" else "" end)\(if .partial then " (partial: reading it stopped early)" else "" end)"]])
     + "\n\nKubernetes keeps only recent logs on each node, so the time covered can be shorter than requested. Previous-container logs (after a restart) hold the last \($m.run.previous_log_lines) lines." end),
   "",
+  (if (($m.profiles // []) | length) > 0 then
+    "## Profiles\n\n" +
+    table(["Pod", "Profile", "Size", "File"];
+      [$m.profiles[] | [.pod, .profile, "\(.bytes) B", "[`\(.file)`](\(.file))"]])
+    + "\n\nOpen a `.pprof` file with `go tool pprof -http=: <file>`.\n"
+   else empty end),
   "## What was not collected",
   "",
   ([$m.steps[] | select(.status != "ok")] as $miss

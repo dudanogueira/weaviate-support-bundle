@@ -36,6 +36,15 @@ def human:
 def envv($facts; $k): ($facts.env.env[$k] // null) | if type == "string" then . else null end;
 def truthy: . != null and (ascii_downcase | test("^(true|1|on|yes)$"));
 
+# Fingerprint of a collection's properties: name, tokenization and data types,
+# sorted by name, nested properties included. Same rule as Weaviate Studio's
+# multi-tenancy check. Blank tokenization counts as the default, "word".
+def props_fingerprint:
+  def one:
+    "\(.name)|\(if ((.tokenization // "") | test("\\S")) then .tokenization else "word" end)|\((.dataType // []) | if type == "array" then sort | join("+") else . end)"
+    + (if ((.nestedProperties // []) | length) > 0 then "{" + (.nestedProperties | props_fingerprint) + "}" else "" end);
+  sort_by(.name) | map(one) | join(";");
+
 def findings($facts):
   ($facts.pods.weaviate // []) as $wpods
   | (($facts.pods.weaviate // []) + ($facts.pods.modules // [])) as $allpods
@@ -140,6 +149,32 @@ def findings($facts):
     ( $facts.collections[]? | select(.tenants != null and ((.tenants.inTransition // []) | length) > 0)
       | f("warn"; "TENANTS_IN_TRANSITION"; "\(.name): \(.tenants.inTransition | length) tenant(s) are changing state";
           "States: \([.tenants.inTransition[].activityStatus] | unique | join(", ")). Check if they stay stuck."; "weaviate/collections/\(.name).json") ),
+
+    ( ([$wnodes[].shards[]? | {class, n: (.objectCount // 0)}] | group_by(.class)
+       | map({key: .[0].class, value: (map(.n) | add)}) | from_entries) as $counts
+      | [$facts.collections[]? | select(.config.multiTenancyConfig.enabled != true and ((.config.properties // []) | length) > 0)
+         | {name, fp: (.config.properties | props_fingerprint), objects: ($counts[.name] // 0)}]
+      | group_by(.fp) | map(select(length >= 2) | sort_by(-.objects)) | sort_by(-(map(.objects) | add)) | .[]
+      | f("info"; "SCHEMA_MT_CANDIDATES"; "\(length) collections have the same properties";
+          "They could be one multi-tenant collection: \(.[:5] | map("\(.name) (\(.objects) objects incl. replicas)") | join(", "))\(if length > 5 then ", ..." else "" end).";
+          "weaviate/collections/\(.[0].name).json") ),
+
+    ( if $facts.collections == null then empty else
+        ([$facts.collections[] | select(.config.multiTenancyConfig.enabled == true) | .name]) as $mt
+        | [$wnodes[] | .name as $n | .shards[]? | select(.objectCount == 0 and .loaded != false and (.class as $c | $mt | index($c) | not))
+           | {class, ref: "\(.name)@\($n)"}]
+        | group_by(.class)[]
+        | f("info"; "EMPTY_SHARDS"; "\(.[0].class): \(length) shard(s) hold no objects";
+            "First: \(.[:5] | map(.ref) | join(", ")). Counts in /v1/nodes update in the background, so very recent writes may not show yet."; "weaviate/nodes.json")
+      end ),
+
+    ( [$wnodes[] | .name as $n | .shards[]? | select(.loaded != false) | {class, shard: .name, node: $n, n: (.objectCount // 0)}]
+      | group_by(.class)[]
+      | .[0].class as $c
+      | (group_by(.shard) | map(select(length >= 2 and (map(.n) | unique | length) > 1))) as $bad
+      | select(($bad | length) > 0)
+      | f("warn"; "REPLICA_OBJECT_COUNT_MISMATCH"; "\($c): \($bad | length) shard(s) have different object counts across replicas";
+          "\($bad[:5] | map("\(.[0].shard) (\(map("\(.node): \(.n)") | join(", ")))") | join("; ")). Counts in /v1/nodes lag a little, so small differences right after writes are normal. A lasting difference can mean async replication is off or behind."; "weaviate/nodes.json") ),
 
     ( $facts.replication[]? | select((.status.errors // []) | length > 0)
       | f("warn"; "REPLICATION_OP_ERRORS"; "Replica \(.type // "operation") for \(.collection)/\(.shard) has errors";

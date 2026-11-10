@@ -81,6 +81,13 @@ def redact_tree:
 def secret_keys_in_tree:
   [.. | objects | to_entries[] | select((.key | secret_name) and ((.value | plain_value) | not)) | .key] | unique;
 
+# Values redact_tree would mask (string leaves under a secret-looking key), so
+# they can be scrubbed from every other file too (logs, events, ...).
+def secret_values_in_tree:
+  [.. | objects | to_entries[] | select((.key | secret_name) and ((.value | plain_value) | not))
+   | .value | if type == "string" then . else (.. | strings) end]
+  | map(sub("^\\s+"; "") | sub("\\s+$"; "")) | map(select(length >= 6)) | unique;
+
 # Container env list: mask plain values with secret-looking names.
 # Values coming from Secrets (valueFrom.secretKeyRef) only show the reference.
 def redact_env:
@@ -158,6 +165,29 @@ def masked_keys_in_yaml:
 def redact_config_value:
   if type != "string" then . else
     (try (fromjson | redact_tree | tojson) catch null) // redact_yaml_text
+  end;
+
+# Values redact_yaml_text masks, read by comparing each line with its
+# redacted form (same number of lines): "key: value", "- value" under a
+# secret key, and the lines of a secret literal block.
+def secret_values_in_yaml:
+  (split("\n")) as $in
+  | (redact_yaml_text | split("\n")) as $out
+  | [range(0; $in | length) as $i
+     | select($in[$i] != $out[$i])
+     | $in[$i] as $l | $out[$i] as $r
+     | if ($r | test(": \\[REDACTED\\]$")) then ($l | sub("^[^:]*: *"; "") | sub(" +#.*$"; ""))
+       elif ($r | test("^ *- +\\[REDACTED\\]$")) then ($l | sub("^ *- +"; ""))
+       elif ($r | test("^ *\\[REDACTED\\]$")) then $l
+       else empty end
+     | sub("^\\s+"; "") | sub("\\s+$"; "") | sub("^[\"'](?<v>.*)[\"']$"; "\(.v)")
+     | select(length >= 6 and (test("^-----(BEGIN|END) ") | not))]
+  | unique;
+
+# Values a ConfigMap value had masked (JSON or YAML).
+def secret_values_in_config_value:
+  if type != "string" then [] else
+    (try (fromjson | secret_values_in_tree) catch null) // secret_values_in_yaml
   end;
 
 # Stream of raw text lines -> scrubbed lines (logs, final pass over files).

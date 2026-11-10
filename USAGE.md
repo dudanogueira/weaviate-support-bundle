@@ -113,7 +113,9 @@ port-forward you started yourself):
 ./collect.sh --weaviate-url http://localhost:8080
 ```
 
-Add `--insecure` if that address uses a self-signed certificate.
+Add `--insecure` if that address uses a self-signed certificate. Prefer
+`https://`: with `http://` to another machine, the API key travels
+unencrypted, so the tool warns first (and asks, unless you use `--yes`).
 
 ## Step 5: review the result
 
@@ -194,7 +196,11 @@ your API key, and never opens the anonymization map.
 | `--since DURATION` | Logs from the last `30m`, `6h`, `24h`, `3d`, ... | `24h` |
 | `--from TIME` | Logs from this time (UTC), e.g. `2026-11-01T08:00` or `2026-11-01` | – |
 | `--to TIME` | Logs until this time (UTC). Use with `--from`. | now |
-| `--max-log-mb N` | Size cap per container log, in MB | `100` |
+| `--max-log-mb N` | Size cap per container log, in MB. A longer log keeps its newest lines | `100` |
+| `--max-api-minutes N` | Time budget for all Weaviate API calls together. After 3 failed calls in a row, the remaining API calls are skipped and listed in the bundle | `15` |
+| `--include-profiling` | Also collect Go profiles from the Weaviate pods. See [Profiling](#profiling) | off |
+| `--include-heap` | With `--include-profiling`: also the heap profile | off |
+| `--profile-seconds N` | Length of the CPU sample, 5 to 120 | `30` |
 | `--include-helm` | Also read Helm release info: chart version, history, your values (redacted). Needs read access to Secrets. | off |
 | `--helm-release NAME` | Helm release name, if it cannot be found automatically (implies `--include-helm`) | found automatically |
 | `--anonymize` | Replace tenant names and user names with placeholders | off |
@@ -227,6 +233,28 @@ For a pod that restarted, the log of the **previous** container is collected
 too (its last 5,000 lines, whatever the window). That is usually where the
 crash reason is.
 
+## Profiling
+
+For performance problems, support may ask for Go profiles:
+
+```bash
+./collect.sh -n weaviate --include-profiling
+```
+
+- It is off by default. It needs `DEBUG_ENDPOINTS_ENABLED=true` in Weaviate
+  (off by default since 1.36.18). If it is off, the preflight says so and the
+  rest of the bundle is collected as usual.
+- The CPU profile adds some load for `--profile-seconds` (30 by default), on all
+  selected pods at the same time.
+- Block and mutex profiles hold data only if Weaviate runs with
+  `GO_BLOCK_PROFILE_RATE` and `GO_MUTEX_PROFILE_FRACTION`.
+- The heap profile needs `--include-heap`.
+- Files are in `pods/<pod>/profiles/`. Open one with
+  `go tool pprof -http=: pods/weaviate-0/profiles/cpu.pprof`.
+- `.pprof` files are binary, so they cannot be redacted or anonymized. They
+  hold function names and profile labels. Treat them as sensitive;
+  `redactions.txt` lists them.
+
 ## High-security environments
 
 - **Anonymize names.** `--anonymize` replaces tenant names (often your own
@@ -234,6 +262,11 @@ crash reason is.
   `user-001`. The mapping is written **next to** the archive
   (`...anonymization-map.txt`), never inside it. Keep it to translate the
   placeholders when support refers to them. Do not send it.
+  It covers **only** tenant and user names. Collection names and infrastructure
+  details stay as they are: the kube context (on EKS it holds your AWS account
+  ID), node names, internal IP addresses, and Raft member addresses. Review
+  `manifest.json`, `kubernetes/cluster.json`, `kubernetes/nodes.json` and
+  `weaviate/raft.json` if those must not leave your company.
 - **Review before sending.** Everything is plain JSON and text. Remove what you
   do not want to share, then rebuild the archive.
 - **Collect less.** Use `--skip` or `--only`, for example `--skip logs`.

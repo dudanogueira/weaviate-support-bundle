@@ -36,6 +36,8 @@ JQ_LIB="$LIB_DIR/jq"
 . "$LIB_DIR/disk.sh"
 # shellcheck source=lib/helm.sh
 . "$LIB_DIR/helm.sh"
+# shellcheck source=lib/profiling.sh
+. "$LIB_DIR/profiling.sh"
 # shellcheck source=lib/summary.sh
 . "$LIB_DIR/summary.sh"
 # shellcheck source=lib/finalize.sh
@@ -72,6 +74,10 @@ What to collect
       --skip LIST            All sections except these
       --include-helm         Also read Helm release info (needs read access to Secrets; values are redacted)
       --helm-release NAME    Helm release name, if it cannot be found automatically
+      --include-profiling    Also collect Go profiles from the Weaviate pods (off by default;
+                             needs DEBUG_ENDPOINTS_ENABLED=true in Weaviate; adds some CPU load)
+      --include-heap         With --include-profiling: also the heap profile
+      --profile-seconds N    Length of the CPU sample, 5 to 120 (default: 30)
 
 Logs
       --since DURATION       Logs from the last DURATION, e.g. 30m, 6h, 24h, 3d (default: 24h)
@@ -85,6 +91,7 @@ Privacy
 
 Other
       --metrics-interval N   Seconds between the two metrics snapshots (default: 30)
+      --max-api-minutes N    Time budget for all Weaviate API calls together (default: 15)
   -o, --output DIR           Where to write the bundle (default: current folder)
       --preflight-only       Show what would be collected, then stop (nothing is collected)
   -y, --yes                  Do not ask for confirmation (for scripts)
@@ -126,7 +133,8 @@ parse_args() {
   NAMESPACE=""; STS_NAME=""; KUBE_CONTEXT=""; PODS_FILTER=""; WEAVIATE_URL=""; INSECURE_TLS=0
   LOG_SINCE="24h"; LOG_FROM=""; LOG_TO=""; MAX_LOG_MB=100
   ONLY_SECTIONS=""; SKIP_SECTIONS=""; INCLUDE_HELM=0; HELM_RELEASE=""; ANONYMIZE=0
-  METRICS_INTERVAL=30; OUTPUT_DIR="."; ASSUME_YES=0; PREFLIGHT_ONLY=0
+  METRICS_INTERVAL=30; OUTPUT_DIR="."; ASSUME_YES=0; PREFLIGHT_ONLY=0; MAX_API_MINUTES=15
+  INCLUDE_PROFILING=0; INCLUDE_HEAP=0; PROFILE_SECONDS=30
   local since_set=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -144,8 +152,12 @@ parse_args() {
       --skip)               need_value "$1" "${2:-}"; SKIP_SECTIONS="$2"; shift 2 ;;
       --include-helm)       INCLUDE_HELM=1; shift ;;
       --helm-release)       need_value "$1" "${2:-}"; HELM_RELEASE="$2"; INCLUDE_HELM=1; shift 2 ;;
+      --include-profiling)  INCLUDE_PROFILING=1; shift ;;
+      --include-heap)       INCLUDE_HEAP=1; shift ;;
+      --profile-seconds)    need_value "$1" "${2:-}"; PROFILE_SECONDS="$2"; shift 2 ;;
       --anonymize)          ANONYMIZE=1; shift ;;
       --metrics-interval)   need_value "$1" "${2:-}"; METRICS_INTERVAL="$2"; shift 2 ;;
+      --max-api-minutes)    need_value "$1" "${2:-}"; MAX_API_MINUTES="$2"; shift 2 ;;
       -o|--output)          need_value "$1" "${2:-}"; OUTPUT_DIR="$2"; shift 2 ;;
       --preflight-only)     PREFLIGHT_ONLY=1; shift ;;
       -y|--yes)             ASSUME_YES=1; shift ;;
@@ -176,16 +188,23 @@ parse_args() {
   printf '%s' "$METRICS_INTERVAL" | grep -Eq '^[0-9]+$' && [ "$METRICS_INTERVAL" -ge 5 ] && [ "$METRICS_INTERVAL" -le 600 ] \
     || die "--metrics-interval must be a number of seconds between 5 and 600."
   printf '%s' "$MAX_LOG_MB" | grep -Eq '^[0-9]+$' && [ "$MAX_LOG_MB" -ge 1 ] || die "--max-log-mb must be a positive number."
+  printf '%s' "$MAX_API_MINUTES" | grep -Eq '^[0-9]+$' && [ "$MAX_API_MINUTES" -ge 1 ] || die "--max-api-minutes must be a positive number."
+
+  printf '%s' "$PROFILE_SECONDS" | grep -Eq '^[0-9]+$' && [ "$PROFILE_SECONDS" -ge 5 ] && [ "$PROFILE_SECONDS" -le 120 ] \
+    || die "--profile-seconds must be a number of seconds between 5 and 120."
+  [ "$INCLUDE_HEAP" = 0 ] || [ "$INCLUDE_PROFILING" = 1 ] || die "--include-heap needs --include-profiling."
+  # The gate only opens the debug port when the option was given.
+  PROFILING_ALLOWED="$INCLUDE_PROFILING"
 
   if [ -n "$WEAVIATE_URL" ]; then
     case "$WEAVIATE_URL" in http://*|https://*) ;; *) die "--weaviate-url must start with http:// or https://" ;; esac
   fi
-  [ -n "$KUBE_CONTEXT" ] && KC_GLOBAL_ARGS="--context=$KUBE_CONTEXT"
 }
 
 main() {
   parse_args "$@"
   check_prerequisites
+  api_key_ok || die "WEAVIATE_API_KEY contains a line break or another control character. Set it again without them."
 
   TOOL_PID=$$
   make_workspace
@@ -206,10 +225,16 @@ main() {
   info "Checking what this account can read..."
   probe_permissions
   connect_weaviate
+  probe_profiling
 
-  # Secrets we already know, so they are scrubbed from every file.
-  jq -L "$JQ_LIB" -r 'include "redact"; env_secret_values[]' "$RAW/statefulset.json" >> "$WORK/secret-values" 2>/dev/null
+  # Secrets we already know, so they are scrubbed from every file. Read them
+  # here from the StatefulSet and every selected pod (Weaviate and modules),
+  # whatever sections run: with --only logs the kubernetes collectors never
+  # run, but module logs can still print their own keys.
+  jq -L "$JQ_LIB" -r 'include "redact"; env_secret_values[]' \
+    "$RAW/statefulset.json" "$RAW/weaviate-pods.json" "$RAW/module-pods.json" >> "$WORK/secret-values" 2>/dev/null
   [ -n "${WEAVIATE_API_KEY:-}" ] && printf '%s\n' "$WEAVIATE_API_KEY" >> "$WORK/secret-values"
+  remember_configmap_secrets
 
   show_preflight
   if [ "$PREFLIGHT_ONLY" = 1 ]; then
@@ -224,6 +249,7 @@ main() {
   section_enabled kubernetes && collect_kubernetes
   section_enabled weaviate && collect_weaviate
   collect_pod_probes
+  [ "$INCLUDE_PROFILING" = 1 ] && section_enabled weaviate && collect_profiles
   section_enabled logs && collect_logs
   section_enabled disk && collect_disk_usage
   [ "$INCLUDE_HELM" = 1 ] && collect_helm

@@ -7,12 +7,14 @@
 # backup module), loads sample data, and runs collect.sh three times:
 #   1. healthy cluster, with a read-only (viewer) API key
 #   2. healthy cluster, with --anonymize, --only and --pods
-#   3. after breaking two pods on purpose (OOM kill, crash loop)
+#   3. after breaking two pods on purpose (the playground's oom and crashloop
+#      scenarios)
 # Then deletes the cluster.
 #
-# This script writes to the test cluster it creates (that is the point of a
-# test setup). It uses its own temporary kubeconfig, so your ~/.kube/config and
-# your current kubectl context are never touched, and no other cluster is used.
+# It shares its setup with the playground (tests/playground/lib.sh). It writes
+# to the test cluster it creates (that is the point of a test setup). It uses
+# its own temporary kubeconfig, so your ~/.kube/config and your current kubectl
+# context are never touched, and no other cluster is used.
 #
 # Requires: docker, kind, helm, kubectl, curl, jq.
 #
@@ -24,139 +26,40 @@
 
 set -u -o pipefail
 cd "$(dirname "$0")/../.." || exit 1
+. tests/playground/lib.sh
 
-CLUSTER="${CLUSTER:-wsb-test}"
-CTX="kind-$CLUSTER"
-NS=weaviate
-CHART_REPO=https://weaviate.github.io/weaviate-helm
-WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/wsb-kind.XXXXXX")
-OUT="${OUT:-$WORKDIR/bundles}"
-ADMIN_KEY="admin-$(date +%s)-$RANDOM$RANDOM$RANDOM"
-PF_PID=""
+PG_CLUSTER="${CLUSTER:-wsb-test}"
+PG_STATE=$(mktemp -d "${TMPDIR:-/tmp}/wsb-kind.XXXXXX")
+pg_init
+OUT="${OUT:-$PG_STATE/bundles}"
+CTX="$PG_CTX"
 fail=0
-export KUBECONFIG="$WORKDIR/kubeconfig"
 
-step() { printf '\n==> %s\n' "$*"; }
 pass() { echo "ok: $1"; }
 bad()  { echo "FAIL: $1"; fail=1; }
-k()    { kubectl --context "$CTX" "$@"; }
+step() { pg_step "$@"; }
 
 cleanup() {
-  [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null
+  pg_api_close
   if [ "${KEEP_CLUSTER:-0}" != "1" ]; then
-    kind delete cluster --name "$CLUSTER" --kubeconfig "$KUBECONFIG" > /dev/null 2>&1 && echo "cluster $CLUSTER deleted"
+    pg_delete_cluster && echo "cluster $PG_CLUSTER deleted"
   fi
-  rm -rf "$WORKDIR"
+  rm -rf "$PG_STATE"
 }
 trap cleanup EXIT
 
-for t in docker kind helm kubectl curl jq; do
-  command -v "$t" > /dev/null || { echo "missing tool: $t"; exit 1; }
-done
-if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-  echo "A kind cluster named '$CLUSTER' already exists. Delete it or set CLUSTER=<other name>."
-  trap - EXIT; rm -rf "$WORKDIR"; exit 1
+pg_require_tools
+if pg_cluster_exists; then
+  echo "A kind cluster named '$PG_CLUSTER' already exists. Delete it or set CLUSTER=<other name>."
+  trap - EXIT; rm -rf "$PG_STATE"; exit 1
 fi
 mkdir -p "$OUT"
 
-# ---------------------------------------------------------------------------
-step "Create kind cluster $CLUSTER (1 control plane + 3 workers)"
-cat > "$WORKDIR/kind.yaml" <<'EOF'
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-  - role: control-plane
-  - role: worker
-  - role: worker
-  - role: worker
-EOF
-kind create cluster --name "$CLUSTER" --config "$WORKDIR/kind.yaml" --kubeconfig "$KUBECONFIG" --wait 120s || exit 1
-
-# ---------------------------------------------------------------------------
-step "Install Weaviate with the Helm chart (3 replicas)"
-cat > "$WORKDIR/values.yaml" <<EOF
-replicas: 3
-resources:
-  requests: {cpu: 100m, memory: 512Mi}
-  limits: {memory: 1Gi}
-storage:
-  size: 2Gi
-service:
-  type: ClusterIP
-grpcService:
-  type: ClusterIP
-authentication:
-  anonymous_access:
-    enabled: false
-  apikey:
-    enabled: true
-    allowed_keys: ["$ADMIN_KEY"]
-    users: ["admin"]
-authorization:
-  rbac:
-    enabled: true
-    root_users: ["admin"]
-backups:
-  filesystem:
-    enabled: true
-env:
-  PROMETHEUS_MONITORING_ENABLED: true
-  GOMEMLIMIT: 800MiB
-  AUTHENTICATION_DB_USERS_ENABLED: true
-EOF
-[ -n "${WEAVIATE_VERSION:-}" ] && printf 'image:\n  tag: "%s"\n' "$WEAVIATE_VERSION" >> "$WORKDIR/values.yaml"
-helm --kube-context "$CTX" install weaviate weaviate --repo "$CHART_REPO" ${CHART_VERSION:+--version "$CHART_VERSION"} \
-  -n "$NS" --create-namespace -f "$WORKDIR/values.yaml" --wait --timeout 15m || exit 1
-k -n "$NS" rollout status statefulset/weaviate --timeout=600s || exit 1
-
-# ---------------------------------------------------------------------------
-step "Load sample data"
-k -n "$NS" port-forward svc/weaviate :80 > "$WORKDIR/pf.log" 2>&1 &
-PF_PID=$!
-for _ in $(seq 1 40); do grep -q 'Forwarding from 127.0.0.1' "$WORKDIR/pf.log" && break; sleep 0.25; done
-PORT=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "$WORKDIR/pf.log" | head -n 1)
-[ -n "$PORT" ] || { echo "port-forward failed"; cat "$WORKDIR/pf.log"; exit 1; }
-BASE="http://127.0.0.1:$PORT"
-api() {  # api <method> <path> [curl args]: prints the body; on HTTP errors also prints it to stderr
-  local m="$1" p="$2" code; shift 2
-  code=$(curl -sS -o "$WORKDIR/resp" -w '%{http_code}' -X "$m" -H "Authorization: Bearer $ADMIN_KEY" \
-    -H 'Content-Type: application/json' "$BASE$p" "$@")
-  case "$code" in
-    2*) cat "$WORKDIR/resp" ;;
-    *) echo "$m $p -> HTTP $code: $(head -c 400 "$WORKDIR/resp")" >&2; return 1 ;;
-  esac
-}
-
-vectors() {  # vectors <class> <count> [tenant]
-  awk -v c="$1" -v n="$2" -v t="${3:-}" 'BEGIN { srand(7); printf "{\"objects\":[";
-    for (i = 0; i < n; i++) { printf "%s{\"class\":\"%s\",%s\"properties\":{\"title\":\"item %d\"},\"vector\":[", (i ? "," : ""), c, (t != "" ? "\"tenant\":\"" t "\"," : ""), i;
-      for (j = 0; j < 32; j++) printf "%s%.4f", (j ? "," : ""), rand(); printf "]}" }
-    printf "]}" }'
-}
-
-api POST /v1/schema -d '{"class":"Article","vectorizer":"none","vectorIndexType":"hnsw","vectorIndexConfig":{"distance":"cosine"},
-  "replicationConfig":{"factor":3},"shardingConfig":{"desiredCount":3},"properties":[{"name":"title","dataType":["text"]}]}' > /dev/null || exit 1
-api POST /v1/schema -d '{"class":"Product","vectorizer":"none","vectorIndexType":"flat","vectorIndexConfig":{"bq":{"enabled":true}},
-  "properties":[{"name":"title","dataType":["text"]}]}' > /dev/null || exit 1
-api POST /v1/schema -d '{"class":"Tenanted","vectorizer":"none","multiTenancyConfig":{"enabled":true,"autoTenantActivation":true},
-  "replicationConfig":{"factor":2},"properties":[{"name":"title","dataType":["text"]}]}' > /dev/null || exit 1
-tenants=$(seq 1 12 | awk '{ printf "%s{\"name\":\"AcmeCorp%02d\"}", (NR > 1 ? "," : ""), $1 }')
-api POST /v1/schema/Tenanted/tenants -d "[$tenants]" > /dev/null || exit 1
-api PUT /v1/schema/Tenanted/tenants -d '[{"name":"AcmeCorp11","activityStatus":"INACTIVE"},{"name":"AcmeCorp12","activityStatus":"INACTIVE"}]' > /dev/null || exit 1
-
-vectors Article 600 | api POST /v1/batch/objects -d @- > /dev/null || exit 1
-vectors Product 200 | api POST /v1/batch/objects -d @- > /dev/null || exit 1
-for t in 01 02 03; do vectors Tenanted 20 "AcmeCorp$t" | api POST /v1/batch/objects -d @- > /dev/null || exit 1; done
-
-READER_KEY=$(api POST /v1/users/db/support-reader -d "{}" | jq -r '.apikey')
-[ -n "$READER_KEY" ] && [ "$READER_KEY" != "null" ] || { echo "could not create the reader user"; exit 1; }
-api POST /v1/authz/users/support-reader/assign -d '{"roles":["viewer"],"userType":"db"}' > /dev/null || exit 1
-
-# Let Raft settle after the writes, so run 1 sees a steady healthy cluster.
-for _ in $(seq 1 60); do
-  [ "$(api GET /v1/cluster/statistics | jq -r '.synchronized')" = "true" ] && break; sleep 2
-done
-kill "$PF_PID" 2>/dev/null; PF_PID=""
+pg_create_cluster 3 || exit 1
+pg_install_weaviate || exit 1
+pg_seed_base || exit 1
+ADMIN_KEY=$(cat "$PG_STATE/admin.key")
+READER_KEY=$(cat "$PG_STATE/reader.key")
 pass "data loaded: 3 collections, 12 tenants, a viewer user"
 
 leak_check() {  # leak_check <bundle dir> <label>
@@ -170,10 +73,10 @@ step_status() { jq -r --arg n "$2" '[.steps[] | select(.name == $n) | .status][0
 # ---------------------------------------------------------------------------
 step "Run 1: healthy cluster, read-only (viewer) key"
 WEAVIATE_API_KEY="$READER_KEY" ./collect.sh --context "$CTX" --yes --include-helm --metrics-interval 10 -o "$OUT/1-healthy" \
-  > "$WORKDIR/run1.out" 2>&1
+  > "$PG_STATE/run1.out" 2>&1
 rc=$?
 B1=$(ls -d "$OUT"/1-healthy/weaviate-support-bundle-*/ 2>/dev/null | head -n 1)
-[ "$rc" -eq 0 ] && [ -n "$B1" ] && pass "run 1 finished" || { bad "run 1 failed (exit $rc)"; tail -40 "$WORKDIR/run1.out"; }
+[ "$rc" -eq 0 ] && [ -n "$B1" ] && pass "run 1 finished" || { bad "run 1 failed (exit $rc)"; tail -40 "$PG_STATE/run1.out"; }
 if [ -n "$B1" ]; then
   for s in "version and modules (/v1/meta)" "nodes and shards (/v1/nodes)" "Raft cluster state (/v1/cluster/statistics)" \
            "collections" "pods" "statefulset + settings" "volume usage" "release"; do
@@ -195,10 +98,10 @@ fi
 # ---------------------------------------------------------------------------
 step "Run 2: --anonymize --only weaviate,logs --pods weaviate-0 (healthy cluster)"
 WEAVIATE_API_KEY="$READER_KEY" ./collect.sh --context "$CTX" --yes --anonymize --only weaviate,logs --pods weaviate-0 --since 30m \
-  -o "$OUT/2-options" > "$WORKDIR/run2.out" 2>&1
+  -o "$OUT/2-options" > "$PG_STATE/run2.out" 2>&1
 rc=$?
 B3=$(ls -d "$OUT"/2-options/weaviate-support-bundle-*/ 2>/dev/null | head -n 1)
-[ "$rc" -eq 0 ] && [ -n "$B3" ] && pass "run 2 finished" || { bad "run 2 failed (exit $rc)"; tail -40 "$WORKDIR/run2.out"; }
+[ "$rc" -eq 0 ] && [ -n "$B3" ] && pass "run 2 finished" || { bad "run 2 failed (exit $rc)"; tail -40 "$PG_STATE/run2.out"; }
 if [ -n "$B3" ]; then
   if grep -rqE 'AcmeCorp[0-9]+|support-reader' "$B3"; then
     bad "--anonymize left tenant or user names:"
@@ -212,37 +115,19 @@ fi
 
 # ---------------------------------------------------------------------------
 step "Break two pods on purpose"
-k -n "$NS" patch statefulset weaviate --type merge -p '{"spec":{"updateStrategy":{"type":"OnDelete","rollingUpdate":null}}}' > /dev/null
-# weaviate-1: memory limit far below what Weaviate needs -> OOM killed
-k -n "$NS" patch statefulset weaviate --type json \
-  -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"40Mi"},
-       {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"40Mi"}]' > /dev/null
-k -n "$NS" delete pod weaviate-1 --wait=false > /dev/null
-for _ in $(seq 1 90); do
-  r=$(k -n "$NS" get pod weaviate-1 -o jsonpath='{.status.containerStatuses[0].lastState.terminated.reason}' 2>/dev/null)
-  [ "$r" = "OOMKilled" ] && break; sleep 2
-done
-echo "weaviate-1 last termination: ${r:-none}"
-# weaviate-2: invalid setting -> exits at startup (crash loop); memory back to normal
-k -n "$NS" patch statefulset weaviate --type json \
-  -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"1Gi"},
-       {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"512Mi"},
-       {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"QUERY_DEFAULTS_LIMIT","value":"not-a-number"}}]' > /dev/null
-k -n "$NS" delete pod weaviate-2 --wait=false > /dev/null
-for _ in $(seq 1 90); do
-  c=$(k -n "$NS" get pod weaviate-2 -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null)
-  [ "${c:-0}" -ge 2 ] && break; sleep 2
-done
-echo "weaviate-2 restarts: ${c:-0}"
+pg_scenario_apply oom
+echo "weaviate-1 last termination: $(kn get pod weaviate-1 -o jsonpath='{.status.containerStatuses[0].lastState.terminated.reason}' 2>/dev/null)"
+pg_scenario_apply crashloop
+echo "weaviate-2 restarts: $(kn get pod weaviate-2 -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null)"
 
 # ---------------------------------------------------------------------------
 step "Run 3: broken cluster"
-WEAVIATE_API_KEY="$READER_KEY" ./collect.sh --context "$CTX" --yes --metrics-interval 5 -o "$OUT/3-broken" > "$WORKDIR/run3.out" 2>&1
+WEAVIATE_API_KEY="$READER_KEY" ./collect.sh --context "$CTX" --yes --metrics-interval 5 -o "$OUT/3-broken" > "$PG_STATE/run3.out" 2>&1
 rc=$?
 B2=$(ls -d "$OUT"/3-broken/weaviate-support-bundle-*/ 2>/dev/null | head -n 1)
-[ "$rc" -eq 0 ] && [ -n "$B2" ] && pass "run 3 finished on a broken cluster" || { bad "run 3 failed (exit $rc)"; tail -40 "$WORKDIR/run3.out"; }
+[ "$rc" -eq 0 ] && [ -n "$B2" ] && pass "run 3 finished on a broken cluster" || { bad "run 3 failed (exit $rc)"; tail -40 "$PG_STATE/run3.out"; }
 if [ -n "$B2" ]; then
-  has_code "$B2" POD_OOMKILLED && pass "flags the OOM kill" || bad "did not flag POD_OOMKILLED"
+  pg_oom_flagged "$B2" weaviate-1 && pass "flags the OOM kill" || bad "did not flag the OOM kill (POD_OOMKILLED, or a restart with exit code 137)"
   { has_code "$B2" POD_CRASHLOOP || has_code "$B2" POD_RESTARTS; } && pass "flags the crash loop" || bad "did not flag the crashing pod"
   has_code "$B2" STATEFULSET_NOT_READY && pass "flags the StatefulSet not ready" || bad "did not flag STATEFULSET_NOT_READY"
   # Whether Raft reports "not synchronized" here depends on restart timing, so

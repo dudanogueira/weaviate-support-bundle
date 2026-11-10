@@ -70,6 +70,9 @@ Paths to `scripts/` and `references/` are relative to this skill's folder.
      user names.
    - `--weaviate-url URL` when they give an address to use instead of a
      port-forward.
+   - `--include-profiling` only when they ask for profiling or performance
+     data, because it adds load on the pods. `--include-heap` only when they
+     name the heap profile.
    - `./collect.sh --help` lists every option. Do not invent options.
 4. **Preflight:** in the tool folder, run `./collect.sh --preflight-only` with
    those options. Show the table as printed. For each row marked ✘, add one

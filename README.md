@@ -59,7 +59,6 @@ chart or your own manifests.
 | [docs/bundle-format.md](docs/bundle-format.md) | Every file in the bundle (for support and tools that read bundles) |
 | [Agent skill](.agents/skills/weaviate-support-bundle/SKILL.md) | How AI agents collect and read bundles, and the rules they follow |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
-| [TODO.md](TODO.md) | Planned work |
 
 ## Contributing
 

@@ -9,7 +9,7 @@
 #   - with --anonymize: tenant and user names -> placeholders
 
 # Words never treated as tenant/user names, to avoid replacing common terms.
-ANON_RESERVED='["default","weaviate","true","false","null","none","admin","ACTIVE","INACTIVE","HOT","COLD","FROZEN","OFFLOADED","READY","READONLY","INDEXING","HEALTHY"]'
+ANON_RESERVED='["default","weaviate","true","false","null","none","admin","ACTIVE","INACTIVE","HOT","COLD","FROZEN","OFFLOADED","READY","READONLY","INDEXING","HEALTHY","ok","skipped","forbidden","not_found","unavailable","error","errors","info","warn","warning","debug","fatal","panic","trace","high","level","msg","message","time","action","class","shard","tenant","user","node","pods","logs","log","previous","kubernetes","config","helm","collections","metrics","status","health","json"]'
 
 # Values of JSON log fields whose name matches a regex (case-insensitive),
 # from every collected log. Weaviate logs one JSON object per line.
@@ -67,11 +67,19 @@ build_anonymize_maps() {
 }
 
 scrub_file() {
-  local f="$1"
-  jq -L "$JQ_LIB" -nRr --slurpfile s "$WORK/secrets.json" --slurpfile t "$WORK/tenant-map.json" --slurpfile u "$WORK/user-map.json" \
+  local f="$1" tenants="$WORK/tenant-map.json" users="$WORK/user-map.json"
+  # In JSON, names are replaced later, in string values only: a tenant named
+  # "name" or "path" must not rewrite the keys of every file.
+  case "$f" in *.json) tenants="$WORK/empty-map.json"; users="$WORK/empty-map.json" ;; esac
+  jq -L "$JQ_LIB" -nRr --slurpfile s "$WORK/secrets.json" --slurpfile t "$tenants" --slurpfile u "$users" \
     'include "redact"; scrub_lines($s[0]; $t[0]; $u[0])' < "$f" > "$f.scrub" 2>> "$WORK/run.log" || { rm -f "$f.scrub"; return 1; }
   case "$f" in
     *.json)
+      if [ "$ANONYMIZE" = "1" ] && jq empty "$f.scrub" 2>/dev/null; then
+        jq -L "$JQ_LIB" --slurpfile t "$WORK/tenant-map.json" --slurpfile u "$WORK/user-map.json" \
+          'include "redact"; walk(if type == "string" then anonymize($t[0]; $u[0]) else . end)' \
+          "$f.scrub" > "$f.anon" 2>> "$WORK/run.log" && mv "$f.anon" "$f.scrub" || { rm -f "$f.anon" "$f.scrub"; return 1; }
+      fi
       if ! jq empty "$f.scrub" 2>/dev/null; then
         # Should not happen; never ship a half-scrubbed file.
         printf '{"error": "file removed: it could not be safely redacted"}\n' > "$f.scrub"
@@ -84,6 +92,7 @@ scrub_file() {
 scrub_bundle() {
   heading "Redacting"
   sed 's/^ *//; s/ *$//' "$WORK/secret-values" | jq -R -s 'split("\n") | map(select(length >= 6)) | unique' > "$WORK/secrets.json"
+  printf '{}' > "$WORK/empty-map.json"
   build_anonymize_maps
   cp "$WORK/run.log" "$STAGE/run.log"
   local f n=0 failed=0
@@ -107,10 +116,16 @@ EOF
       c=$(grep -o '\[REDACTED' "$f" 2>/dev/null | wc -l | tr -d ' ')
       [ "${c:-0}" -gt 0 ] && printf '  %6s  %s\n' "$c" "${f#"$STAGE"/}"
     done
+    if [ -n "$(find "$STAGE" -type f -name '*.pprof' | head -n 1)" ]; then
+      printf '\nNot redacted (binary profiles: function names and profile labels; treat them as sensitive):\n'
+      find "$STAGE" -type f -name '*.pprof' | sort | sed "s|^$STAGE/|  - |"
+      [ "$ANONYMIZE" != "1" ] || printf 'Anonymization does not reach these files: profile labels may hold tenant names.\n'
+    fi
     if [ "$ANONYMIZE" = "1" ]; then
       printf '\nAnonymization: %s tenant name(s) and %s user name(s) were replaced with placeholders.\n' \
         "$(jq 'length' "$WORK/tenant-map.json")" "$(jq 'length' "$WORK/user-map.json")"
       printf 'The mapping stays on your machine (see the end of the tool output) and is NOT in this bundle.\n'
+      printf 'Not anonymized: collection names, the kube context, node names and IP addresses.\n'
       [ -z "$ANON_WARNING" ] || printf 'Warning: %s\n' "$ANON_WARNING"
     fi
   } > "$STAGE/redactions.txt"

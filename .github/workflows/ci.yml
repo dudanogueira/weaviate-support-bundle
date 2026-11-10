@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck (follows collect.sh into lib/)
-        run: shellcheck -x --severity=warning collect.sh tests/*.sh tests/kind/run.sh .agents/skills/*/scripts/*.sh
+        run: shellcheck -x --severity=warning collect.sh tests/*.sh tests/kind/run.sh tests/playground/*.sh tests/playground/scenarios/*.sh .agents/skills/*/scripts/*.sh
 
   test:
     name: Tests (${{ matrix.os }})

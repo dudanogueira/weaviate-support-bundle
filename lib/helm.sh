@@ -35,6 +35,9 @@ _helm_collect() {
 
   jq -L "$JQ_LIB" -r 'include "redact"; (.config // {}) | secret_keys_in_tree[] | "helm/values.json: \(.)"' \
     "$RAW/helm-release.json" >> "$WORK/redacted-fields" 2>/dev/null
+  # The masked values themselves: scrubbed from every other file too.
+  jq -L "$JQ_LIB" -r 'include "redact"; (.config // {}) | secret_values_in_tree[]' \
+    "$RAW/helm-release.json" >> "$WORK/secret-values" 2>/dev/null
 
   jq -L "$JQ_LIB" -n --slurpfile r "$RAW/helm-release.json" --slurpfile s "$RAW/helm-secrets.json" 'include "redact";
     {release: $r[0].name,

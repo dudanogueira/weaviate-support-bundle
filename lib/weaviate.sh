@@ -4,13 +4,45 @@
 # Only GET requests, only metadata: versions, node and Raft status, collection
 # configuration, shard and tenant status. Never objects, vectors or queries.
 
+# A sick Weaviate is the main reason this tool runs, and each failing call can
+# take up to its full timeout. So:
+#   - after API_MAX_FAILS failures in a row (no connection or HTTP 5xx), the
+#     remaining API calls are skipped and reported,
+#   - all API calls together get a time budget (--max-api-minutes).
+API_FAILS=0
+API_MAX_FAILS=3
+API_DEADLINE=""
+
 # wget_json <path> <dest-file> [timeout]: GET $WEAVIATE_BASE<path> into dest.
 # Returns a collector status code.
 wget_json() {
-  local path="$1" dest="$2" code
+  local path="$1" dest="$2" code now curl_rc
   # shellcheck disable=SC2034  # read by http_get through bash dynamic scoping
   local HTTP_TIMEOUT="${3:-60}"
+  if [ "$API_FAILS" -ge "$API_MAX_FAILS" ]; then
+    step_detail "skipped after $API_MAX_FAILS failed API calls in a row"; return 13
+  fi
+  if [ -n "$API_DEADLINE" ]; then
+    now=$(date +%s)
+    if [ "$now" -ge "$API_DEADLINE" ]; then
+      step_detail "skipped: the --max-api-minutes budget is used up"; return 13
+    fi
+    # A call never runs past the budget.
+    [ $((API_DEADLINE - now)) -lt "$HTTP_TIMEOUT" ] && HTTP_TIMEOUT=$((API_DEADLINE - now))
+  fi
   code=$(http_get "$WEAVIATE_BASE$path" "$RAW/http.out")
+  curl_rc=$?
+  # No connection, and not a timeout (curl 28): the tunnel may be gone.
+  # Reconnect and try once more. HTTP errors are never retried: each can take
+  # as long as the timeout on a sick cluster.
+  if [ "$code" = "000" ] && [ "$curl_rc" != 28 ] && api_reconnect; then
+    code=$(http_get "$WEAVIATE_BASE$path" "$RAW/http.out")
+  fi
+  case "$code" in
+    501) ;;                                  # feature not enabled: not a failure
+    000|5*) API_FAILS=$((API_FAILS + 1)) ;;
+    *) API_FAILS=0 ;;
+  esac
   case "$code" in
     200) if jq '.' "$RAW/http.out" > "$RAW/http.json" 2>/dev/null; then
            mkdir -p "$(dirname "$dest")"; mv "$RAW/http.json" "$dest"; return 0
@@ -84,7 +116,7 @@ w_collections() {
         : > "$WORK/.step-detail"
       fi
     else
-      if wget_json "/v1/schema/$c/shards" "$RAW/shard-list.json"; then
+      if wget_json "/v1/schema/$c/shards" "$RAW/shard-list.json" 30; then
         cp "$RAW/shard-list.json" "$RAW/shards.json"
       else
         jq -n --arg e "$(cat "$WORK/.step-detail" 2>/dev/null)" '{error: $e}' > "$RAW/shards.json"
@@ -106,6 +138,7 @@ collect_weaviate() {
     run_step weaviate "Weaviate API" _skip
     return
   fi
+  API_DEADLINE=$(( $(date +%s) + MAX_API_MINUTES * 60 ))
   run_step weaviate "version and modules (/v1/meta)" w_meta
   run_step weaviate "nodes and shards (/v1/nodes)" w_nodes
   run_step weaviate "Raft cluster state (/v1/cluster/statistics)" w_raft

@@ -25,8 +25,14 @@ check_prerequisites() {
 # Kubernetes connection
 # ---------------------------------------------------------------------------
 discover_cluster() {
-  CONTEXT_NAME=$(kc config current-context 2>/dev/null)
-  [ -n "$CONTEXT_NAME" ] || die "kubectl has no current context. Point kubectl at the cluster first (kubectl config use-context ...), or pass --context."
+  # With --context, that is the cluster every call goes to. `kubectl config
+  # current-context` ignores --context and would name a different cluster.
+  if [ -n "$KUBE_CONTEXT" ]; then
+    CONTEXT_NAME="$KUBE_CONTEXT"
+  else
+    CONTEXT_NAME=$(kc config current-context 2>/dev/null)
+    [ -n "$CONTEXT_NAME" ] || die "kubectl has no current context. Point kubectl at the cluster first (kubectl config use-context ...), or pass --context."
+  fi
   if ! kc version -o json > "$RAW/version.json" 2> "$WORK/err"; then
     die "Cannot reach the Kubernetes API with context '$CONTEXT_NAME': $(short_error "$(cat "$WORK/err")")"
   fi
@@ -82,6 +88,11 @@ discover_statefulset() {
   METRICS_ENABLED=false
   case "$env_metrics" in [Tt]rue|1|[Oo]n|[Yy]es) METRICS_ENABLED=true ;; esac
   METRICS_PORT="${env_metrics_port:-2112}"
+  # Weaviate's debug port (pprof and admin endpoints): GO_PROFILING_PORT,
+  # default 6060. The gate refuses to open a tunnel to it.
+  local env_debug_port
+  env_debug_port=$(sts_env GO_PROFILING_PORT)
+  case "$env_debug_port" in ''|*[!0-9]*) ;; *) WEAVIATE_DEBUG_PORT="$env_debug_port" ;; esac
 }
 
 # Plain env value of the Weaviate container (empty if unset or from a Secret).
@@ -145,9 +156,12 @@ discover_pods() {
   POD_NODES=$(printf '%s %s' "$POD_NODES" "$mnodes" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')
   POD_NODES="${POD_NODES% }"
 
-  # First ready Weaviate pod (used for cluster-wide API calls)
-  API_POD=$(jq -r '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | sort | .[0] // empty' "$RAW/weaviate-pods.json")
-  [ -n "$API_POD" ] || API_POD=$(jq -r '[.items[] | select(.status.phase == "Running") | .metadata.name] | sort | .[0] // empty' "$RAW/weaviate-pods.json")
+  # Weaviate pods for cluster-wide API calls: Ready ones first, then Running.
+  # The first that answers is used.
+  API_PODS=$(jq -r '([.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | sort)
+      + ([.items[] | select(.status.phase == "Running") | .metadata.name] | sort)
+      | reduce .[] as $p ([]; if index($p) then . else . + [$p] end) | join(" ")' "$RAW/weaviate-pods.json")
+  API_POD="${API_PODS%% *}"
 }
 
 # ---------------------------------------------------------------------------
@@ -208,23 +222,66 @@ probe_permissions() {
 # ---------------------------------------------------------------------------
 # Weaviate API connection (port-forward to one pod, or --weaviate-url)
 # ---------------------------------------------------------------------------
+
+# api_open_tunnel <pods>: tunnel to the first pod that answers. Sets API_POD,
+# API_TUNNEL_PID and WEAVIATE_BASE, or PF_WEAVIATE and WEAVIATE_ERROR on failure.
+api_open_tunnel() {
+  local p rc code
+  TUNNEL_ERROR=""
+  for p in $1; do
+    tunnel_open "$p" "$HTTP_PORT"; rc=$?
+    if [ "$rc" -eq 11 ]; then
+      PF_WEAVIATE="forbidden"; PF_PORTFORWARD="forbidden"; WEAVIATE_ERROR="port-forward not allowed"
+      return 1
+    fi
+    if [ "$rc" -eq 0 ]; then
+      code=$(HTTP_TIMEOUT=10 http_get "http://127.0.0.1:${TUNNEL_PORTS}/v1/.well-known/live" "$RAW/live-probe.out" noauth)
+      if [ "$code" != "000" ]; then
+        API_POD="$p"; API_TUNNEL_PID="$TUNNEL_PID"; WEAVIATE_BASE="http://127.0.0.1:${TUNNEL_PORTS}"
+        return 0
+      fi
+      TUNNEL_ERROR="pod $p does not answer"
+      tunnel_close "$TUNNEL_PID"
+    fi
+    log_line WARN "no connection through $p: ${TUNNEL_ERROR:-unknown}"
+  done
+  PF_WEAVIATE="unavailable"; WEAVIATE_ERROR="port-forward failed: ${TUNNEL_ERROR:-no pod answered}"
+  return 1
+}
+
+# api_reconnect: the API tunnel was lost (pod restart, dropped connection).
+# Open a new one, trying the other pods first. At most 3 times per run.
+api_reconnect() {
+  [ "${CONNECT_MODE:-}" = "port-forward" ] || return 1
+  [ "${API_RECONNECTS:-0}" -lt 3 ] || return 1
+  API_RECONNECTS=$(( ${API_RECONNECTS:-0} + 1 ))
+  tunnel_close "${API_TUNNEL_PID:-}"
+  local p before="" after="" seen=0
+  for p in $API_PODS; do
+    if [ "$p" = "$API_POD" ]; then seen=1
+    elif [ "$seen" = 1 ]; then after="$after $p"
+    else before="$before $p"; fi
+  done
+  info "Lost the connection to $API_POD; reconnecting..."
+  api_open_tunnel "$after $before $API_POD"
+}
 connect_weaviate() {
   PF_WEAVIATE="off"
+  CLEARTEXT_URL=0
   WEAVIATE_VERSION=""
   if ! section_enabled weaviate && ! section_enabled metrics; then return; fi
 
   if [ -n "$WEAVIATE_URL" ]; then
     WEAVIATE_BASE="${WEAVIATE_URL%/}"
     CONNECT_MODE="url"
+    if url_is_cleartext_remote "$WEAVIATE_BASE"; then
+      CLEARTEXT_URL=1
+      [ -n "${WEAVIATE_API_KEY:-}" ] && confirm_cleartext_key
+    fi
   else
     CONNECT_MODE="port-forward"
     if [ -z "$API_POD" ]; then PF_WEAVIATE="unavailable"; WEAVIATE_ERROR="no running Weaviate pod"; return; fi
-    tunnel_open "$API_POD" "$HTTP_PORT"
-    case $? in
-      0) API_TUNNEL_PID="$TUNNEL_PID"; WEAVIATE_BASE="http://127.0.0.1:${TUNNEL_PORTS}" ;;
-      11) PF_WEAVIATE="forbidden"; PF_PORTFORWARD="forbidden"; WEAVIATE_ERROR="port-forward not allowed"; return ;;
-      *) PF_WEAVIATE="unavailable"; WEAVIATE_ERROR="port-forward failed: $TUNNEL_ERROR"; return ;;
-    esac
+    api_open_tunnel "$API_PODS" || return
   fi
 
   local code
@@ -232,9 +289,11 @@ connect_weaviate() {
   if [ "$code" = "401" ] && [ -z "${WEAVIATE_API_KEY:-}" ] && is_interactive && [ "$ASSUME_YES" != "1" ]; then
     say ""
     say "  Weaviate needs an API key. Use a read-only key if you have one."
+    [ "${CLEARTEXT_URL:-0}" = 1 ] && say "  Note: $WEAVIATE_URL uses http://, so the key is sent unencrypted."
     printf '  Weaviate API key (input hidden, Enter to skip): ' >&2
     read -r -s WEAVIATE_API_KEY
     say ""
+    api_key_ok || die "The API key contains a control character. Run again and paste the key only."
     export WEAVIATE_API_KEY
     [ -n "$WEAVIATE_API_KEY" ] && code=$(http_get "$WEAVIATE_BASE/v1/meta" "$RAW/meta-probe.json")
   fi
@@ -245,6 +304,63 @@ connect_weaviate() {
     403) PF_WEAVIATE="forbidden"; WEAVIATE_ERROR="the API key has no read permission" ;;
     000) PF_WEAVIATE="unavailable"; WEAVIATE_ERROR="could not connect to $WEAVIATE_BASE" ;;
     *)   PF_WEAVIATE="unavailable"; WEAVIATE_ERROR="HTTP $code from /v1/meta" ;;
+  esac
+}
+
+# url_is_cleartext_remote <url>: true for http:// to a host that is not this
+# machine (localhost, 127.x, [::1]). The API key would cross the network
+# unencrypted.
+url_is_cleartext_remote() {
+  local h
+  case "$1" in http://*) ;; *) return 1 ;; esac
+  h="${1#http://}"; h="${h%%/*}"; h="${h##*@}"
+  case "$h" in \[*) h="${h%%]*}]" ;; *) h="${h%%:*}" ;; esac
+  case "$h" in localhost|127.*|\[::1\]) return 1 ;; esac
+  return 0
+}
+
+# Before the API key is sent over plain http: warn, and ask when someone is
+# at the terminal and --yes was not given.
+confirm_cleartext_key() {
+  warn "$WEAVIATE_URL uses http:// to another machine: the API key is sent unencrypted. Use https:// if you can."
+  if [ "$ASSUME_YES" != "1" ] && is_interactive; then
+    printf '  Send the API key over http anyway? [y/N] ' >&2
+    local answer
+    read -r answer
+    case "$answer" in
+      y|Y|yes|YES|Yes) ;;
+      *) die "Stopped before sending the API key. Use an https:// address, or leave out --weaviate-url to use a port-forward." ;;
+    esac
+  fi
+}
+
+# probe_profiling: with --include-profiling, can the debug port be read?
+# Weaviate: GO_PROFILING_DISABLE stops the listener; DEBUG_ENDPOINTS_ENABLED
+# off makes it answer 404 (the default since 1.36.18).
+probe_profiling() {
+  PF_PROFILING="none"
+  PROFILING_ERROR=""
+  [ "$INCLUDE_PROFILING" = 1 ] || return 0
+  if ! section_enabled weaviate; then PF_PROFILING="skipped"; return 0; fi
+  WEAVIATE_DEBUG_PORT="${WEAVIATE_DEBUG_PORT:-6060}"
+  if [ -z "$API_POD" ]; then PF_PROFILING="unavailable"; PROFILING_ERROR="no running Weaviate pod"; return 0; fi
+  case "$(sts_env GO_PROFILING_DISABLE)" in
+    [Tt]rue|1|[Oo]n|[Yy]es) PF_PROFILING="off"; PROFILING_ERROR="the debug port is disabled in Weaviate (GO_PROFILING_DISABLE)"; return 0 ;;
+  esac
+  tunnel_open "$API_POD" "$WEAVIATE_DEBUG_PORT"
+  case $? in
+    0) ;;
+    11) PF_PROFILING="forbidden"; PROFILING_ERROR="port-forward not allowed"; return 0 ;;
+    *) PF_PROFILING="unavailable"; PROFILING_ERROR="port-forward failed: $TUNNEL_ERROR"; return 0 ;;
+  esac
+  local code
+  code=$(HTTP_TIMEOUT=15 http_get "http://127.0.0.1:${TUNNEL_PORTS}/debug/pprof/threadcreate" "$RAW/profile-probe.out" noauth)
+  tunnel_close "$TUNNEL_PID"
+  case "$code" in
+    200) PF_PROFILING="ok" ;;
+    404) PF_PROFILING="off"; PROFILING_ERROR="debug endpoints are off in Weaviate (set DEBUG_ENDPOINTS_ENABLED=true)" ;;
+    000) PF_PROFILING="unavailable"; PROFILING_ERROR="no answer on debug port $WEAVIATE_DEBUG_PORT" ;;
+    *)   PF_PROFILING="unavailable"; PROFILING_ERROR="HTTP $code from the debug port" ;;
   esac
 }
 
@@ -273,7 +389,8 @@ show_preflight() {
   printf '  %-16s %s\n' "Weaviate" "${WEAVIATE_VERSION:+v$WEAVIATE_VERSION · }$nw pod(s): ${SEL_WEAVIATE_PODS:-none}" >&2
   [ "$nm" -gt 0 ] && printf '  %-16s %s\n' "Module pods" "$SEL_MODULE_PODS" >&2
   if [ "$CONNECT_MODE" = "url" ]; then
-    printf '  %-16s %s\n' "Connect via" "$WEAVIATE_URL" >&2
+    printf '  %-16s %s%s\n' "Connect via" "$WEAVIATE_URL" \
+      "$([ "${CLEARTEXT_URL:-0}" = 1 ] && [ -n "${WEAVIATE_API_KEY:-}" ] && printf ' (http: the API key is sent unencrypted)')" >&2
   else
     printf '  %-16s %s\n' "Connect via" "temporary port-forward to $API_POD (closed at the end)" >&2
   fi
@@ -328,12 +445,24 @@ show_preflight() {
     *)         _row "Helm" unavailable "not available → will skip" ;;
   esac
 
+  case "$PF_PROFILING" in
+    none)    _row "Profiling" off "off (add --include-profiling)" ;;
+    skipped) _row "Profiling" off "skipped (needs the weaviate section)" ;;
+    ok)      _row "Profiling" ok "CPU for ${PROFILE_SECONDS}s + instant profiles per pod$([ "$INCLUDE_HEAP" = 1 ] && printf ', heap'); adds some CPU load for ${PROFILE_SECONDS}s" ;;
+    *)       _row "Profiling" "$PF_PROFILING" "$PROFILING_ERROR → will skip" ;;
+  esac
+
   if [ "$ANONYMIZE" = "1" ]; then _row "Anonymize" ok "tenant and user names replaced"
   else _row "Anonymize" off "off (add --anonymize)"; fi
 
   say ""
   say "  ${C_BLD}Nothing in your cluster or in Weaviate will be changed.${C_RST}"
   say "  Secrets are redacted. You can review everything before sending."
+  if [ "$PF_PROFILING" = "ok" ]; then
+    say "  Binary profiles (.pprof) cannot be redacted or anonymized: they hold function"
+    say "  names and profile labels. Treat them as sensitive."
+    [ "$INCLUDE_HEAP" = 1 ] && say "  The heap profile is included: leave out --include-heap if you do not need it."
+  fi
 }
 
 ask_approval() {

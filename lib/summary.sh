@@ -8,6 +8,7 @@ write_manifest() {
   done
   jq -s '.' "$WORK/steps.jsonl" > "$WORK/steps.json"
   jq -s '.' "$WORK/logs-index.jsonl" > "$WORK/logs-index.json" 2>/dev/null || printf '[]' > "$WORK/logs-index.json"
+  jq -s '.' "$WORK/profiles-index.jsonl" > "$WORK/profiles-index.json" 2>/dev/null || printf '[]' > "$WORK/profiles-index.json"
   jq -n \
     --arg schema "$BUNDLE_SCHEMA_VERSION" --arg name "$TOOL_NAME" --arg version "$TOOL_VERSION" \
     --arg created "$CREATED_AT" --arg ctx "$CONTEXT_NAME" --arg ns "$NAMESPACE" --arg sts "$STS_NAME" \
@@ -17,7 +18,8 @@ write_manifest() {
     --argjson prev "$PREVIOUS_LOG_LINES" --argjson interval "$METRICS_INTERVAL" --argjson maxlog "$MAX_LOG_MB" \
     --arg connect "$CONNECT_MODE" --argjson anon "$([ "$ANONYMIZE" = 1 ] && echo true || echo false)" \
     --argjson helm "$([ "$INCLUDE_HELM" = 1 ] && echo true || echo false)" \
-    --slurpfile steps "$WORK/steps.json" --slurpfile logs "$WORK/logs-index.json" \
+    --argjson profiling "$([ "$INCLUDE_PROFILING" = 1 ] && echo true || echo false)" \
+    --slurpfile steps "$WORK/steps.json" --slurpfile logs "$WORK/logs-index.json" --slurpfile profiles "$WORK/profiles-index.json" \
     'def words: split(" ") | map(select(length > 0));
      def opt: if . == "" then null else . end;
      {schema_version: $schema,
@@ -29,9 +31,10 @@ write_manifest() {
             log_window: $window, log_since: (if $from == "" then $since else null end),
             log_from: ($from | opt), log_to: ($to | opt), previous_log_lines: $prev,
             max_log_mb_per_container: $maxlog, metrics_interval_seconds: $interval,
-            connect_mode: $connect, anonymized: $anon, include_helm: $helm},
+            connect_mode: $connect, anonymized: $anon, include_helm: $helm, include_profiling: $profiling},
       steps: $steps[0],
       logs: $logs[0],
+      profiles: $profiles[0],
       files: []}' > "$STAGE/manifest.json"
 }
 

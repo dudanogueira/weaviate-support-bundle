@@ -25,7 +25,8 @@ jq -L $L -Rrs 'include "redact"; redact_yaml_text' $F/conf.yaml > "$T/conf.yaml"
 jq -L $L -nRr --argjson s "$secrets" 'include "redact"; scrub_lines($s; {}; {})' < $F/weaviate.log > "$T/weaviate.log"
 
 # Helm-style values tree
-jq -L $L 'include "redact"; redact_tree' > "$T/values.json" <<'EOF'
+mkdir -p "$T/in"  # inputs: not part of the leak scan below
+cat > "$T/in/values.json" <<'EOF'
 {"authentication": {"apikey": {"enabled": true, "allowed_keys": ["fixture-helm-key-0014"], "users": ["admin"]}},
  "modules": {"text2vec-openai": {"enabled": true, "apiKey": "fixture-helm-openai-0015"}},
  "backups": {"s3": {"envSecrets": {"AWS_SECRET_ACCESS_KEY": "s3-secret-name"}, "envconfig": {"BACKUP_S3_BUCKET": "bucket"}}},
@@ -33,8 +34,9 @@ jq -L $L 'include "redact"; redact_tree' > "$T/values.json" <<'EOF'
  "collections": {"tokenization": "word"},
  "replicas": 3}
 EOF
+jq -L $L 'include "redact"; redact_tree' "$T/in/values.json" > "$T/values.json"
 
-leaks=$(grep -ho 'fixture[-A-Za-z]*[0-9]\{4\}\|AKIAFIXTURE[A-Z0-9]*\|fixture[A-Za-z]*[0-9]\{4\}' "$T"/* | sort -u)
+leaks=$(grep -hos 'fixture[-A-Za-z]*[0-9]\{4\}\|AKIAFIXTURE[A-Z0-9]*\|fixture[A-Za-z]*[0-9]\{4\}' "$T"/* | sort -u)
 if [ -z "$leaks" ]; then pass "no planted secret survived"; else bad "secrets leaked: $leaks"; fi
 
 check_kept() {  # check_kept <file> <text>
@@ -65,5 +67,16 @@ case "$out" in
   *tenant-000001*user-001*) pass "anonymize replaces tenant and user names" ;;
   *) bad "anonymize output unexpected: $out" ;;
 esac
+
+# Values masked by name are returned, so they are scrubbed from every other file.
+v=$(jq -L $L -c 'include "redact"; secret_values_in_tree' "$T/in/values.json" 2>/dev/null)
+case "$v" in *fixture-helm-key-0014*fixture-helm-openai-0015*) pass "secret_values_in_tree returns the masked Helm values" ;; *) bad "secret_values_in_tree: $v" ;; esac
+case "$v" in *bucket*|*word*|*admin*) bad "secret_values_in_tree returned a safe value: $v" ;; *) pass "secret_values_in_tree keeps safe values out" ;; esac
+v=$(jq -L $L -Rrs 'include "redact"; secret_values_in_yaml | join(" ")' $F/conf.yaml)
+case "$v" in *fixture-yaml-key-0006*fixture-yaml-key-0007*) pass "secret_values_in_yaml returns masked list items" ;; *) bad "secret_values_in_yaml list items: $v" ;; esac
+case "$v" in *fixture-oidc-secret-0008*) pass "secret_values_in_yaml returns masked key values (unquoted)" ;; *) bad "secret_values_in_yaml key value: $v" ;; esac
+case "$v" in *reader*|*cert.pem*|*BEGIN*|*\"*) bad "secret_values_in_yaml returned a safe value or quotes: $v" ;; *) pass "secret_values_in_yaml keeps safe values, markers and quotes out" ;; esac
+v=$(jq -L $L -nc 'include "redact"; "{\"password\":\"fixture-json-pw-0042\",\"limit\":5}" | secret_values_in_config_value')
+[ "$v" = '["fixture-json-pw-0042"]' ] && pass "secret_values_in_config_value reads JSON" || bad "secret_values_in_config_value JSON: $v"
 
 exit "$fail"

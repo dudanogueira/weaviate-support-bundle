@@ -1,0 +1,30 @@
+# Helm values for the playground and tests/kind/run.sh.
+# __ADMIN_KEY__ is replaced with a random key at install time.
+replicas: 3
+resources:
+  requests: {cpu: 100m, memory: 512Mi}
+  limits: {memory: 1Gi}
+storage:
+  size: 2Gi
+service:
+  type: ClusterIP
+grpcService:
+  type: ClusterIP
+authentication:
+  anonymous_access:
+    enabled: false
+  apikey:
+    enabled: true
+    allowed_keys: ["__ADMIN_KEY__"]
+    users: ["admin"]
+authorization:
+  rbac:
+    enabled: true
+    root_users: ["admin"]
+backups:
+  filesystem:
+    enabled: true
+env:
+  PROMETHEUS_MONITORING_ENABLED: true
+  GOMEMLIMIT: 800MiB
+  AUTHENTICATION_DB_USERS_ENABLED: true

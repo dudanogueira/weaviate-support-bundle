@@ -112,6 +112,10 @@ check_file() {
   esac
 }
 
+refuse_binary() {
+  case "$1" in *.pprof) die "$1 is a binary profile. Open it with: go tool pprof -http=: $1" ;; esac
+}
+
 cut_lines() { LC_ALL=C awk -v cap="$1" '{ if (length($0) > cap) $0 = substr($0, 1, cap) " ...[line cut]"; print }'; }
 
 overview() {
@@ -148,7 +152,7 @@ overview() {
        end),
       "",
       "Logs (\(($m.logs // []) | length))",
-      ($m.logs[]? | "  \(.file | s): \(.lines | s) lines, \(.first // "?") to \(.last // "?")\(if .truncated == true then ", cut at the size limit" else "" end)")
+      ($m.logs[]? | "  \(.file | s): \(.lines | s) lines, \(.first // "?") to \(.last // "?")\(if .truncated == true then ", cut at the size limit, newest lines kept" else "" end)\(if .partial == true then ", partial: reading it stopped early" else "" end)")
   ' | clean
 }
 
@@ -165,6 +169,7 @@ show_file() {
   local p="$1" start="${2:-1}" total end
   is_number "$start" && [ "$start" -ge 1 ] || die "LINE must be a number from 1."
   check_file "$p"
+  refuse_binary "$p"
   total=$(raw_member "$p" | awk 'END { print NR }')
   [ "$start" -le "$total" ] || [ "$total" -eq 0 ] || die "$p has $total lines; LINE $start is past the end."
   end=$((start + PAGE - 1)); [ "$end" -gt "$total" ] && end=$total
@@ -179,6 +184,7 @@ tail_file() {
   is_number "$n" && [ "$n" -ge 1 ] || die "N must be a number from 1."
   [ "$n" -le "$MAX_TAIL" ] || n=$MAX_TAIL
   check_file "$p"
+  refuse_binary "$p"
   total=$(raw_member "$p" | awk 'END { print NR }')
   [ "$n" -le "$total" ] || n=$total
   printf '== %s: last %s of %s lines ==\n' "$p" "$n" "$total"
@@ -202,6 +208,7 @@ search_files() {
   printf '' | grep -E -e "$re" > /dev/null 2>&1; [ $? -eq 2 ] && die "invalid regular expression: $re"
   if [ -n "$target" ]; then
     check_file "$target"
+    refuse_binary "$target"
   fi
   {
     if [ -n "$target" ]; then printf '%s\n' "$target"; else listed_files | grep '\.log$'; fi

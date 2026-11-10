@@ -51,4 +51,8 @@ Behaviour that is easy to misread in a bundle.
 
 - The REST API is on 8080 by default and metrics on 2112 (when
   `PROMETHEUS_MONITORING_ENABLED=true`).
-- The debug port (6060) is off by default and the tool never calls it.
+- The debug port (`GO_PROFILING_PORT`, default 6060) answers 404 unless
+  `DEBUG_ENDPOINTS_ENABLED=true`. The tool calls it only with
+  `--include-profiling`, and only for fixed pprof paths. Block and mutex
+  profiles hold data only with `GO_BLOCK_PROFILE_RATE` and
+  `GO_MUTEX_PROFILE_FRACTION` set.

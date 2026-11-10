@@ -17,3 +17,6 @@ CLAUDE.md
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Playground state (kubeconfig, keys, bundles): tests/playground/playground.sh
+.playground/
