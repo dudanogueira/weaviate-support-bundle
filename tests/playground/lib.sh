@@ -48,6 +48,22 @@ pg_guard() {
 k() { pg_guard; kubectl --context "$PG_CTX" "$@"; }
 kn() { k -n "$PG_NS" "$@"; }
 
+# pg_lock: one command that changes the cluster at a time. Two at once restart
+# each other's pods and corrupt the state files. A lock whose process is gone
+# is taken over.
+pg_lock() {
+  ( umask 077; mkdir -p "$PG_STATE" )
+  local holder
+  if ! ( set -C; echo "$$" > "$PG_STATE/lock" ) 2> /dev/null; then
+    holder=$(cat "$PG_STATE/lock" 2> /dev/null)
+    if [ -n "$holder" ] && kill -0 "$holder" 2> /dev/null; then
+      pg_die "another playground command is running (PID $holder). Wait for it, or stop it."
+    fi
+    echo "$$" > "$PG_STATE/lock"
+  fi
+  trap 'rm -f "$PG_STATE/lock"' EXIT
+}
+
 pg_require_tools() {
   local t missing=""
   for t in docker kind helm kubectl curl jq; do
@@ -107,8 +123,10 @@ pg_install_weaviate() {
 # ---------------------------------------------------------------------------
 PG_PF_PID=""
 
+# pg_api_open [target] [port]: default the service; a scenario that freezes a
+# pod names the pod to use instead.
 pg_api_open() {
-  kn port-forward svc/weaviate :80 > "$PG_STATE/pf.log" 2>&1 &
+  kn port-forward "${1:-svc/weaviate}" "${2:-:80}" > "$PG_STATE/pf.log" 2>&1 &
   PG_PF_PID=$!
   local port="" i=0
   while [ "$i" -lt 40 ]; do
@@ -188,6 +206,8 @@ pg_seed_more() {
   done
   pg_api_close
 }
+
+pg_wait_raft_once() { [ "$(pg_api GET /v1/cluster/statistics 2> /dev/null | jq -r '.synchronized')" = "true" ]; }
 
 # Let Raft settle after writes, so a healthy run sees a steady cluster.
 pg_wait_raft() {

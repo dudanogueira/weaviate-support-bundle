@@ -158,6 +158,7 @@ tests/playground/playground.sh scenario oom        # break something
 tests/playground/playground.sh collect             # run collect.sh with a read-only (viewer) key
 tests/playground/playground.sh revert oom
 tests/playground/playground.sh verify --all        # apply, collect, check findings, revert; exit code
+tests/playground/playground.sh demo                # one run with many red flags, then the summary
 tests/playground/playground.sh down
 ```
 

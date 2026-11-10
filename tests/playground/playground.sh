@@ -40,6 +40,8 @@ Usage: tests/playground/playground.sh COMMAND [args]
   revert NAME...|--all           Undo scenarios
   collect [collect.sh options]   Run collect.sh on the cluster with a read-only (viewer) key
   verify NAME...|--all           For each: apply, collect, check the findings, revert
+  demo [--keep]                  One run with many red flags: break several things, collect,
+                                 show the findings and the summary (--keep: leave it broken)
   shell-env                      Print exports to use kubectl / collect.sh by hand
 
 Environment: PLAYGROUND_CLUSTER (default wsb-playground), PLAYGROUND_DIR,
@@ -173,6 +175,40 @@ cmd_verify() {
   return "$fail"
 }
 
+# One bundle with many red flags. Only one pod is broken, so Raft keeps its
+# quorum and the schema can still be read. cordon comes last: a pod with a local
+# volume could not come back on a cordoned node.
+DEMO_SCENARIOS="schema-checks gomemlimit-high crashloop cordon"
+
+cmd_demo() {
+  need_up
+  local keep=0 n out b fail=0 reverse=""
+  [ "${1:-}" = "--keep" ] && keep=1
+  for n in $DEMO_SCENARIOS; do
+    pg_scenario_apply "$n" || pg_die "scenario $n failed"
+    reverse="$n $reverse"
+  done
+  out="$PG_STATE/bundles/demo-$(date -u +%Y%m%d-%H%M%S)"
+  pg_step "Collect (one run)"
+  b=$(pg_collect "$out" --metrics-interval 5)
+  [ -n "$b" ] || { tail -n 20 "$out/collect.out" >&2; pg_die "collect.sh produced no bundle"; }
+  pg_step "Red flags found ($(jq 'length' "$b/findings.json"))"
+  jq -r '.[] | "  [\(.severity)] \(.code): \(.title)"' "$b/findings.json"
+  pg_step "SUMMARY.md (start)"
+  sed -n '/^## Red flags/,/^## Pods/p' "$b/SUMMARY.md" | sed '$d'
+  pg_step "Expected red flags"
+  for n in $DEMO_SCENARIOS; do pg_scenario_check "$n" "$b" || fail=1; done
+  if [ "$keep" = 1 ]; then
+    pg_say "Left broken. Undo with: playground.sh revert --all"
+  else
+    for n in $reverse; do pg_scenario_revert "$n" || fail=1; done
+  fi
+  pg_say ""
+  pg_say "Full summary: $b/SUMMARY.md"
+  pg_say "Archive:      $b.tar.gz"
+  return "$fail"
+}
+
 cmd_shell_env() {
   need_up
   # The key is read from its file when you run the line; it is never printed.
@@ -182,6 +218,7 @@ cmd_shell_env() {
 }
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in up|seed|scenario|revert|verify|demo) pg_lock ;; esac
 case "$cmd" in
   up)        cmd_up "$@" ;;
   down)      cmd_down ;;
@@ -192,6 +229,7 @@ case "$cmd" in
   revert)    cmd_revert "$@" ;;
   collect)   cmd_collect "$@" ;;
   verify)    cmd_verify "$@" ;;
+  demo)      cmd_demo "$@" ;;
   shell-env) cmd_shell_env ;;
   -h|--help|help|"") usage ;;
   *) usage; exit 1 ;;

@@ -91,6 +91,7 @@ if [ -n "$B1" ]; then
     && pass "tenant counts correct" || bad "tenant counts wrong"
   high=$(jq -r '[.[] | select(.severity == "high") | .code] | join(", ")' "$B1/findings.json")
   [ -z "$high" ] && pass "healthy cluster has no high red flags" || bad "unexpected high red flags: $high"
+  has_code "$B1" SCHEMA_MT_CANDIDATES && pass "flags collections with the same properties" || bad "did not flag SCHEMA_MT_CANDIDATES"
   leak_check "$B1" "run 1"
   cp "$B1/SUMMARY.md" "$OUT/1-healthy-SUMMARY.md"
 fi
