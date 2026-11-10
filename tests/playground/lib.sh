@@ -125,6 +125,7 @@ PG_PF_PID=""
 
 # pg_api_open [target] [port]: default the service; a scenario that freezes a
 # pod names the pod to use instead.
+# shellcheck disable=SC2120  # scenario files, sourced by name, pass the arguments
 pg_api_open() {
   kn port-forward "${1:-svc/weaviate}" "${2:-:80}" > "$PG_STATE/pf.log" 2>&1 &
   PG_PF_PID=$!
